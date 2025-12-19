@@ -1,0 +1,27 @@
+# Core Dependencies
+flask==3.0.0
+flask-cors==4.0.0
+python-dotenv==1.0.0
+
+# Computer Vision & Image Processing
+opencv-python==4.8.1.78
+opencv-contrib-python==4.8.1.78
+numpy==1.24.3
+Pillow==10.1.0
+
+# OCR
+pytesseract==0.3.10
+
+# PDF Processing
+pdf2image==1.16.3
+# Note: poppler-utils must be installed system-wide
+# Ubuntu/Debian: sudo apt-get install poppler-utils
+# macOS: brew install poppler
+# Windows: Download from https://github.com/oschwartz10612/poppler-windows/releases
+
+# Image Quality Assessment
+scikit-image==0.22.0
+
+# Utilities
+werkzeug==3.0.1
+

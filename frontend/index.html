@@ -1,0 +1,185 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Document Quality Verification Pipeline</title>
+    <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>📄 Document Quality Verification Pipeline</h1>
+            <p class="subtitle">Automated Quality Checks for Government Documents</p>
+        </header>
+
+        <!-- Information Section -->
+        <section class="info-section">
+            <div class="info-card">
+                <h2>🎯 What This System Does</h2>
+                <p>This system automatically filters out low-quality documents before processing, saving costs and improving accuracy. It performs 4 stages of quality checks:</p>
+                
+                <div class="stages-grid">
+                    <div class="stage-card">
+                        <div class="stage-number">1</div>
+                        <h3>Basic Quality Checks</h3>
+                        <p><strong>Technology:</strong> OpenCV</p>
+                        <p><strong>Time:</strong> 50-100ms</p>
+                        <ul>
+                            <li>Resolution check</li>
+                            <li>Blur detection</li>
+                            <li>Brightness & contrast</li>
+                            <li>White space detection</li>
+                            <li>Skew detection</li>
+                        </ul>
+                    </div>
+                    
+                    <div class="stage-card">
+                        <div class="stage-number">2</div>
+                        <h3>OCR Confidence Analysis</h3>
+                        <p><strong>Technology:</strong> Tesseract OCR</p>
+                        <p><strong>Time:</strong> 2-5 seconds</p>
+                        <ul>
+                            <li>Text readability</li>
+                            <li>Confidence scores</li>
+                            <li>Text regions</li>
+                            <li>Character count</li>
+                        </ul>
+                    </div>
+                    
+                    <div class="stage-card">
+                        <div class="stage-number">3</div>
+                        <h3>Handwriting Detection</h3>
+                        <p><strong>Technology:</strong> Computer Vision</p>
+                        <p><strong>Time:</strong> 0.5-2 seconds</p>
+                        <ul>
+                            <li>Stroke width analysis</li>
+                            <li>Baseline variance</li>
+                            <li>Character spacing</li>
+                            <li>Component analysis</li>
+                        </ul>
+                    </div>
+                    
+                    <div class="stage-card">
+                        <div class="stage-number">4</div>
+                        <h3>Overall Quality Score</h3>
+                        <p><strong>Technology:</strong> BRISQUE</p>
+                        <p><strong>Time:</strong> 100-200ms</p>
+                        <ul>
+                            <li>Blind quality assessment</li>
+                            <li>Natural scene statistics</li>
+                            <li>Final quality score</li>
+                        </ul>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <!-- Upload Section -->
+        <section class="upload-section">
+            <!-- Tabs for Single vs Bulk Upload -->
+            <div class="upload-tabs">
+                <button class="tab-btn active" id="singleTab" onclick="switchTab('single')">Single Upload</button>
+                <button class="tab-btn" id="bulkTab" onclick="switchTab('bulk')">Bulk Upload</button>
+            </div>
+
+            <!-- Single Upload Tab -->
+            <div class="upload-card" id="singleUploadCard">
+                <h2>📤 Upload Document</h2>
+                <p>Upload a PDF or image file (PNG, JPG, JPEG) to verify its quality</p>
+                
+                <div class="upload-area" id="uploadArea">
+                    <input type="file" id="fileInput" accept=".pdf,.png,.jpg,.jpeg" style="display: none;">
+                    <div class="upload-content">
+                        <div class="upload-icon">📁</div>
+                        <p>Click to browse or drag and drop your file here</p>
+                        <p class="file-info">Maximum file size: 10MB</p>
+                    </div>
+                </div>
+                
+                <div id="fileInfo" class="file-info-display" style="display: none;">
+                    <p><strong>Selected file:</strong> <span id="fileName"></span></p>
+                    <button id="processBtn" class="btn btn-primary">Process Document</button>
+                    <button id="clearBtn" class="btn btn-secondary">Clear</button>
+                </div>
+            </div>
+
+            <!-- Bulk Upload Tab -->
+            <div class="upload-card" id="bulkUploadCard" style="display: none;">
+                <h2>📦 Bulk Upload Documents</h2>
+                <p>Upload multiple PDF or image files at once to verify their quality</p>
+                
+                <div class="upload-area" id="bulkUploadArea">
+                    <input type="file" id="bulkFileInput" accept=".pdf,.png,.jpg,.jpeg" multiple style="display: none;">
+                    <div class="upload-content">
+                        <div class="upload-icon">📁</div>
+                        <p>Click to browse or drag and drop multiple files here</p>
+                        <p class="file-info">Maximum file size: 10MB per file | Maximum files: 50</p>
+                    </div>
+                </div>
+                
+                <div id="bulkFileInfo" class="file-info-display" style="display: none;">
+                    <p><strong>Selected files:</strong> <span id="fileCount">0</span> file(s)</p>
+                    <div id="fileList" class="file-list"></div>
+                    <button id="processBulkBtn" class="btn btn-primary">Process All Documents</button>
+                    <button id="clearBulkBtn" class="btn btn-secondary">Clear</button>
+                </div>
+            </div>
+        </section>
+
+        <!-- Results Section -->
+        <section class="results-section" id="resultsSection" style="display: none;">
+            <div class="results-card">
+                <h2>📊 Processing Results</h2>
+                
+                <!-- Overall Status -->
+                <div id="overallStatus" class="status-card">
+                    <!-- Will be populated by JavaScript -->
+                </div>
+                
+                <!-- Stage Results -->
+                <div id="stageResults" class="stage-results">
+                    <!-- Will be populated by JavaScript -->
+                </div>
+                
+                <!-- Quality Score -->
+                <div id="qualityScore" class="quality-score-card">
+                    <!-- Will be populated by JavaScript -->
+                </div>
+            </div>
+        </section>
+
+        <!-- Bulk Upload Results Section -->
+        <section class="results-section" id="bulkResultsSection" style="display: none;">
+            <div class="results-card">
+                <h2>📊 Bulk Processing Results</h2>
+                
+                <!-- Summary -->
+                <div id="bulkSummary" class="bulk-summary">
+                    <!-- Will be populated by JavaScript -->
+                </div>
+                
+                <!-- Results Table -->
+                <div id="bulkResultsTable" class="bulk-results-table">
+                    <!-- Will be populated by JavaScript -->
+                </div>
+            </div>
+        </section>
+
+        <!-- Loading Overlay -->
+        <div id="loadingOverlay" class="loading-overlay" style="display: none;">
+            <div class="loading-spinner"></div>
+            <p>Processing document through quality pipeline...</p>
+            <div class="loading-stages">
+                <div class="loading-stage" id="stage1Loading">Stage 1: Basic Checks</div>
+                <div class="loading-stage" id="stage2Loading">Stage 2: OCR Analysis</div>
+                <div class="loading-stage" id="stage3Loading">Stage 3: Handwriting Detection</div>
+                <div class="loading-stage" id="stage4Loading">Stage 4: Quality Score</div>
+            </div>
+        </div>
+    </div>
+
+    <script src="script.js"></script>
+</body>
+</html>
+
