@@ -438,14 +438,14 @@ class BasicQualityChecker:
         checks['white_space_failure_type'] = failure_type
         if not checks['white_space']:
             # White space is always a warning, never critical - don't mark as failed
-            warnings.append(result['message'])
+                warnings.append(result['message'])
         
         checks['skew'], failure_type, result = self.check_skew(image)
         checks['skew_details'] = result
         checks['skew_failure_type'] = failure_type
         if not checks['skew']:
             # Skew is always a warning, never critical - don't mark as failed
-            warnings.append(result['message'])
+                warnings.append(result['message'])
         
         # Check for document corruption/distortion (broader lines, mess)
         checks['corruption'], failure_type, result = self.check_document_corruption(image)

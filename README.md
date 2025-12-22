@@ -14,6 +14,9 @@ This pipeline automatically filters out low-quality documents before they reach 
   - Single document upload with detailed stage-by-stage analysis
   - **Bulk upload** - Process up to 50 documents at once with summary results
   - **Multi-page PDF processing** - Processes all pages and evaluates based on best page or content page (page 2 for 2-page documents)
+  - **URL-based processing** - Download and process documents from URLs (for RTS API integration)
+  - **Swagger API documentation** - Interactive API docs at `/api/docs`
+  - **Florence-2 integration** - Optional AI-powered handwriting verification to reduce false positives
 
 **Key Principle**: If OCR can read the document (≥ 50% confidence), it's accepted even if image quality metrics are lower. Readability is prioritized over perfect image quality.
 
@@ -32,7 +35,8 @@ The system uses a 4-stage cascading filter. Each stage is faster and cheaper tha
 ### Stage 1: Basic Quality Checks (OpenCV)
 
 - **Processing Time**: 50-100ms
-- **Checks**: Resolution, Blur, Brightness, Contrast, White Space, Skew
+- **Checks**: Resolution, Blur, Brightness, Contrast, White Space, Skew, Corruption
+- **Status Logic**: Stage passes if no critical failures (warnings don't cause failure)
 - **Rejects**: 20-30% of uploads
 
 ### Stage 2: OCR Confidence Analysis (Tesseract)
@@ -46,6 +50,7 @@ The system uses a 4-stage cascading filter. Each stage is faster and cheaper tha
 - **Processing Time**: 0.5-2 seconds
 - **Checks**: Stroke width variance, Baseline variance, Character spacing, Connected components
 - **Rejects**: 10-20% of documents that passed Stage 2
+- **Florence-2 Integration**: Optional AI-powered verification to reduce false positives (e.g., bold text)
 
 ### Stage 4: Overall Quality Score (BRISQUE)
 
@@ -162,7 +167,16 @@ Doc_verifier_Qualification_Pipeline/
 │   ├── index.html              # Single & bulk upload tabs
 │   ├── styles.css              # Styling for both modes
 │   └── script.js               # Single & bulk upload logic
+├── src/
+│   ├── utils/                  # Utility modules
+│   │   ├── document_downloader.py  # URL-based document downloader
+│   │   ├── florence_classifier.py  # Florence-2 AI classifier (optional)
+│   │   ├── pdf_converter.py
+│   │   └── image_processor.py
+│   └── pipeline/
+│       └── orchestrator.py    # Main pipeline coordinator
 ├── uploads/                    # Uploaded files (created automatically)
+├── downloads/                  # Downloaded files from URLs (created automatically)
 ├── cache/                      # Temporary files (created automatically)
 └── logs/                       # Log files (created automatically)
 ```
@@ -184,12 +198,19 @@ All configuration is done through the `.env` file. Key settings:
 - `UPLOAD_FOLDER`: Directory for uploaded files (default: uploads)
 - `ALLOWED_EXTENSIONS`: Comma-separated list (default: pdf,png,jpg,jpeg)
 
+### Document Download Configuration (for URL-based processing)
+
+- `DOWNLOAD_FOLDER`: Directory for downloaded files (default: downloads)
+- `DOWNLOAD_TIMEOUT`: Request timeout in seconds (default: 30)
+
 ### Quality Thresholds
 
 Adjust these values to fine-tune the quality checks:
 
 - `RESOLUTION_MIN_WIDTH`: Minimum image width (default: 400 critical, 800 recommended)
 - `BLUR_THRESHOLD`: Blur detection threshold (default: 60 warning, 30 critical)
+- `BRIGHTNESS_CRITICAL_MAX`: Maximum brightness threshold (default: 300 - documents with brightness up to 300 are accepted)
+- `BRIGHTNESS_CRITICAL_MIN`: Minimum brightness threshold (default: 15)
 - `OCR_AVG_CONFIDENCE_THRESHOLD`: OCR confidence threshold (default: 45 warning, 25 critical)
 - `HANDWRITING_THRESHOLD`: Handwriting detection threshold (default: 15 warning, 30 critical)
 - `BRISQUE_THRESHOLD`: BRISQUE quality threshold (default: 80)
@@ -310,11 +331,53 @@ Response:
 }
 ```
 
+#### Process Document from URL
+
+```bash
+POST /api/process-url
+Content-Type: application/json
+
+{
+  "url": "https://example.com/document.pdf",
+  "filename": "custom_name"  // optional
+}
+```
+
+Response: Same format as `/api/upload` with additional fields:
+- `source`: "url"
+- `source_url`: Original URL
+- `downloaded_filename`: Saved filename
+
+#### Bulk Process Documents from URLs
+
+```bash
+POST /api/bulk-process-urls
+Content-Type: application/json
+
+{
+  "urls": [
+    "https://example.com/doc1.pdf",
+    "https://example.com/doc2.pdf"
+  ],
+  "filenames": ["doc1", "doc2"]  // optional
+}
+```
+
+Response: Same format as `/api/bulk-upload`
+
 #### Get Stages Information
 
 ```bash
 GET /api/stages
 ```
+
+#### Swagger API Documentation
+
+```bash
+GET /api/docs
+```
+
+Interactive Swagger UI for testing all endpoints directly from the browser.
 
 ## 📊 Quality Score Calculation
 
@@ -421,12 +484,21 @@ Based on testing with government documents:
 
 - **Blurry Scanned Documents**: Handwriting false positives are filtered when document is blurry but OCR can read it (≥ 50% confidence).
 - **Signatures/Stamps**: Documents with concentrated handwriting (15-30%) are accepted if OCR ≥ 30% (reduced from 75% requirement).
+- **Bold Text Handling**: Fixed false positives where bold text was misclassified as handwriting. System now trusts high OCR (≥ 80%) over handwriting detection for bold text cases.
+- **Florence-2 Integration**: Optional AI-powered verification to reduce handwriting false positives. Only called when handwriting is detected but OCR is high (≥ 50%).
 
 ### Lenient Acceptance Logic
 
-- **High OCR (≥ 80%)**: Accept with score ≥ 55
+- **High OCR (≥ 80%)**: Accept with score ≥ 55, trust OCR over handwriting detection
 - **Good OCR (≥ 60%)**: Accept with score ≥ 60
 - **Readable OCR (≥ 50%)**: Filter out blur/handwriting false positives
+
+### New Features
+
+- **URL-Based Processing**: Download and process documents from URLs via `/api/process-url` and `/api/bulk-process-urls` endpoints
+- **RTS API Integration**: Support for processing documents from external APIs (like RTS website)
+- **Swagger Documentation**: Interactive API documentation at `/api/docs` for testing all endpoints
+- **Enhanced Safeguards**: Multiple layers of protection to prevent accepting handwritten documents even with high OCR
 
 
 ## OCR thresholds — acceptance and rejection
@@ -521,6 +593,115 @@ All thresholds are configurable via the .env file.
 - Reduced false rejections of good documents
 - More accurate detection of signatures/stamps vs handwritten documents
 
+## 🔗 URL-Based Processing (RTS API Integration)
+
+The system supports processing documents from URLs, making it easy to integrate with external APIs like RTS website.
+
+### Single Document from URL
+
+```bash
+POST /api/process-url
+Content-Type: application/json
+
+{
+  "url": "https://rts-website.com/api/document/123/download",
+  "filename": "doc123"  // optional
+}
+```
+
+### Bulk Processing from URLs
+
+```bash
+POST /api/bulk-process-urls
+Content-Type: application/json
+
+{
+  "urls": [
+    "https://rts-website.com/api/document/123/download",
+    "https://rts-website.com/api/document/124/download"
+  ],
+  "filenames": ["doc123", "doc124"]  // optional
+}
+```
+
+### Integration Example
+
+```python
+import requests
+
+# Get document URLs from RTS API
+rts_docs = requests.get("https://rts-website.com/api/documents").json()
+urls = [doc['download_link'] for doc in rts_docs['documents']]
+
+# Process through quality pipeline
+response = requests.post(
+    "http://localhost:5000/api/bulk-process-urls",
+    json={"urls": urls}
+)
+results = response.json()
+
+# Filter accepted documents
+accepted = [r for r in results['results'] if r['status'] == 'ACCEPTED']
+```
+
+### Configuration
+
+```env
+DOWNLOAD_FOLDER=downloads
+DOWNLOAD_TIMEOUT=30
+```
+
+## 🤖 Florence-2 Integration (Optional)
+
+Florence-2 is an optional AI-powered component that helps reduce false positives in handwriting detection, especially for bold text cases.
+
+### Installation
+
+```bash
+pip install torch transformers einops timm
+```
+
+### Enable
+
+```env
+FLORENCE_ENABLED=true
+```
+
+### How It Works
+
+- **When Called**: Handwriting detected (≥ 20%) AND OCR confidence ≥ 50%
+- **Purpose**: Verify if handwriting detection is a false positive (e.g., bold text)
+- **Performance**: First document ~8-10 seconds (model loading), subsequent ~1-2 seconds
+- **Memory**: ~2-3GB RAM
+
+### Benefits
+
+- Reduces false positives from bold text, formatting, and scanning artifacts
+- Provides additional verification layer for borderline cases
+- Modular component - can be enabled/disabled easily
+
+## 📚 API Documentation
+
+### Swagger UI
+
+Access interactive API documentation at:
+
+```
+http://localhost:5000/api/docs
+```
+
+Features:
+- Test all endpoints directly from browser
+- View request/response examples
+- See parameter descriptions
+- Export OpenAPI specification
+
+### OpenAPI Spec
+
+```
+http://localhost:5000/api/apispec.json
+```
+
 ## 🛠️ Development
 
 ### Adding New Quality Checks
@@ -544,7 +725,7 @@ For questions or support, contact the development team.
 
 ---
 
-**Version**: 1.1.0
+**Version**: 1.2.0
 **Last Updated**: December 2025
 
 ### Changelog
@@ -561,3 +742,10 @@ For questions or support, contact the development team.
 - ✅ **Bulk results table** - View status, score, OCR confidence, and reason for each document
 - ✅ **Multi-page PDF processing** - Processes all pages of PDF documents
 - ✅ **Smart page selection** - 1-page docs use page 1, 2-page docs use page 2 (content page), 3+ page docs use best quality page
+- ✅ **Brightness threshold increased** - Documents with brightness up to 300 are now accepted (was 250)
+- ✅ **Stage 1 status logic improved** - Stage only fails on critical failures, warnings don't cause failure
+- ✅ **URL-based processing** - Download and process documents from URLs (for RTS API integration)
+- ✅ **Swagger API documentation** - Interactive API docs at `/api/docs`
+- ✅ **Florence-2 integration** - Optional AI-powered handwriting verification
+- ✅ **Bold text handling** - Fixed false positives where bold text was misclassified as handwriting
+- ✅ **Enhanced safeguards** - Multiple layers to prevent accepting handwritten documents

@@ -16,6 +16,14 @@ from src.stages.stage4_brisque_quality import BRISQUEQualityScorer
 from src.utils.pdf_converter import PDFConverter
 from src.utils.image_processor import ImageProcessor
 
+# Optional Florence-2 integration (modular component)
+try:
+    from src.utils.florence_classifier import get_florence_instance
+    FLORENCE_AVAILABLE = True
+except ImportError:
+    FLORENCE_AVAILABLE = False
+    logger.warning("Florence-2 classifier not available (install torch and transformers to enable)")
+
 load_dotenv()
 
 # Set up logger
@@ -28,6 +36,14 @@ class PipelineOrchestrator:
     def __init__(self):
         """Initialize all pipeline stages."""
         self.stage1 = BasicQualityChecker()
+        # Initialize Florence classifier if available (lazy loaded)
+        self.florence_classifier = None
+        if FLORENCE_AVAILABLE:
+            try:
+                self.florence_classifier = get_florence_instance()
+                logger.info("Florence-2 classifier available (will load on first use)")
+            except Exception as e:
+                logger.warning(f"Florence-2 classifier initialization failed: {e}")
         self.stage2 = OCRConfidenceAnalyzer()
         self.stage3 = HandwritingDetector()
         self.stage4 = BRISQUEQualityScorer()
@@ -77,7 +93,8 @@ class PipelineOrchestrator:
         resolution: Optional[tuple],
         stage1_critical: List[str],
         stage2_critical: List[str],
-        stage3_critical: List[str]
+        stage3_critical: List[str],
+        image_path: Optional[str] = None
     ) -> Optional[Dict]:
         """
         Make consensus-based decision using all signals together.
@@ -89,6 +106,82 @@ class PipelineOrchestrator:
         # Extract distribution info
         is_concentrated = handwriting_dist.get('is_concentrated', False) if handwriting_dist else False
         is_spread_out = handwriting_dist.get('is_spread_out', False) if handwriting_dist else False
+        
+        # ========================================
+        # TRUST HIGH OCR OVER HANDWRITING DETECTION
+        # ========================================
+        # If OCR is very high (>= 80%), it can reliably read printed text
+        # Bold text, formatting, and scanning artifacts can cause false handwriting detection
+        # Trust OCR as the primary signal when it's very high
+        # BUT: Always check Florence to ensure we don't accept handwritten documents
+        if ocr_confidence is not None and ocr_confidence >= 80:
+            # Very high OCR confidence - document is clearly readable printed text
+            # Even if handwriting detection flags it (e.g., from bold text), trust OCR
+            # BUT: Must verify with Florence to ensure it's not handwritten
+            if handwriting_pct is not None and handwriting_pct >= 40:
+                # High handwriting detection but very high OCR - likely false positive (bold text, formatting)
+                # ALWAYS check Florence first - if it says handwritten, reject regardless of OCR
+                florence_override = self._check_florence_override(
+                    image_path, ocr_confidence, handwriting_pct
+                )
+                
+                # SAFEGUARD: If Florence says handwritten, REJECT even if OCR is high
+                # Handwritten documents can sometimes have decent OCR if very clear
+                if florence_override and not florence_override.get('is_printed', True):
+                    # Florence confirmed it's handwritten - reject
+                    logger.warning(
+                        f"High OCR ({ocr_confidence:.1f}%) but Florence confirmed HANDWRITTEN - "
+                        f"rejecting document (handwriting: {handwriting_pct:.1f}%)"
+                    )
+                    return {
+                        'status': 'REJECTED',
+                        'priority': 'N/A',
+                        'message': f'Document is handwritten - Florence-2 confirmed handwritten text despite high OCR confidence ({ocr_confidence:.1f}%). Only printed documents are accepted.'
+                    }
+                
+                if florence_override and florence_override.get('is_printed'):
+                    # Florence confirms printed - accept
+                    logger.info(
+                        f"High OCR ({ocr_confidence:.1f}%) + Florence confirmed printed - "
+                        f"overriding handwriting false positive ({handwriting_pct:.1f}%)"
+                    )
+                    return {
+                        'status': 'ACCEPTED',
+                        'priority': 'Normal',
+                        'message': f'Document accepted - Very high OCR confidence ({ocr_confidence:.1f}%) and Florence-2 confirmed printed text. Handwriting detection ({handwriting_pct:.1f}%) was false positive (likely bold text or formatting).',
+                        'florence_override': {
+                            'applied': True,
+                            'is_printed': True,
+                            'confidence': florence_override.get('confidence', 0),
+                            'explanation': florence_override.get('explanation', '')[:200]
+                        }
+                    }
+                else:
+                    # Florence did not confirm or was not available
+                    # For extremely high OCR (>= 85%), trust OCR for bold text cases
+                    # BUT: Only if handwriting is not extremely high (>= 50% is suspicious)
+                    if ocr_confidence >= 85 and handwriting_pct < 50:
+                        logger.info(
+                            f"Extremely high OCR ({ocr_confidence:.1f}%) with moderate handwriting "
+                            f"({handwriting_pct:.1f}%) - trusting OCR (likely bold text false positive)"
+                        )
+                        return {
+                            'status': 'ACCEPTED',
+                            'priority': 'Normal',
+                            'message': f'Document accepted - Extremely high OCR confidence ({ocr_confidence:.1f}%) indicates readable printed text. Handwriting detection ({handwriting_pct:.1f}%) is likely false positive from bold text or formatting.'
+                        }
+                    elif handwriting_pct >= 50:
+                        # Very high handwriting (>= 50%) - even with high OCR, require Florence confirmation
+                        # This is a safeguard against accepting handwritten documents
+                        logger.warning(
+                            f"Very high handwriting ({handwriting_pct:.1f}%) with high OCR ({ocr_confidence:.1f}%) - "
+                            f"Florence did not confirm printed, rejecting to avoid false positive"
+                        )
+                        return {
+                            'status': 'REJECTED',
+                            'priority': 'N/A',
+                            'message': f'Document appears handwritten ({handwriting_pct:.1f}% handwriting). Florence-2 verification required but not available or did not confirm printed text. Only printed documents are accepted.'
+                        }
         
         # ========================================
         # HANDLE BLURRY SCANNED DOCUMENTS
@@ -128,24 +221,165 @@ class PipelineOrchestrator:
         # Clearly handwritten (high percentage) - but only if not blurry
         # Blurry documents can have false positives, so require higher threshold or good OCR
         if handwriting_pct is not None and handwriting_pct >= 40:
-            # If document is blurry and OCR is good, it's likely a false positive
-            if is_blurry and ocr_confidence is not None and ocr_confidence >= 60:
-                # Blurry scanned document with good OCR - trust OCR over handwriting detection
-                pass  # Don't reject for handwriting if OCR says it's readable printed text
+            # Handwriting >= 40% - likely actually handwritten
+            # But if OCR is high (>= 70%), check Florence to verify (might be false positive from bold text)
+            if ocr_confidence is not None and ocr_confidence >= 70:
+                # Good OCR - might be false positive (bold text, formatting), check Florence
+                florence_override = self._check_florence_override(
+                    image_path, ocr_confidence, handwriting_pct
+                )
+                
+                # SAFEGUARD: Check if Florence said handwritten
+                if florence_override and not florence_override.get('is_printed', True):
+                    # Florence confirmed handwritten - reject
+                    logger.warning(
+                        f"Florence confirmed HANDWRITTEN for handwriting {handwriting_pct:.1f}% - "
+                        f"rejecting despite OCR: {ocr_confidence:.1f}%"
+                    )
+                    return {
+                        'status': 'REJECTED',
+                        'priority': 'N/A',
+                        'message': f'Document is handwritten - Florence-2 confirmed handwritten text. Only printed documents are accepted.'
+                    }
+                
+                if florence_override and florence_override.get('is_printed'):
+                    # Florence confirms it's printed - override
+                    logger.info(
+                        f"Florence override: Document classified as printed "
+                        f"(confidence: {florence_override.get('confidence', 0):.2f})"
+                    )
+                    return {
+                        'status': 'ACCEPTED',
+                        'priority': 'Normal',
+                        'message': f'Document accepted - Florence-2 confirmed printed text (confidence: {florence_override.get("confidence", 0):.1%}). Handwriting detection was false positive (likely bold text or formatting).',
+                        'florence_override': {
+                            'applied': True,
+                            'is_printed': True,
+                            'confidence': florence_override.get('confidence', 0),
+                            'explanation': florence_override.get('explanation', '')[:200]
+                        }
+                    }
+                elif ocr_confidence >= 75:
+                    # OCR is very high (>= 75%) but Florence didn't confirm
+                    # Still trust OCR for bold text cases - likely false positive
+                    logger.info(
+                        f"Very high OCR ({ocr_confidence:.1f}%) but Florence did not confirm - "
+                        f"trusting OCR over handwriting detection ({handwriting_pct:.1f}%) - likely bold text"
+                    )
+                    return {
+                        'status': 'ACCEPTED',
+                        'priority': 'Normal',
+                        'message': f'Document accepted - Very high OCR confidence ({ocr_confidence:.1f}%) indicates readable printed text. Handwriting detection ({handwriting_pct:.1f}%) is likely false positive from bold text or formatting.'
+                    }
+                else:
+                    # Florence did not confirm and OCR not high enough - reject
+                    return {
+                        'status': 'REJECTED',
+                        'priority': 'N/A',
+                        'message': f'Document is significantly handwritten ({handwriting_pct:.1f}% handwriting) - only printed documents are accepted'
+                    }
             else:
+                # OCR not high enough - reject without checking Florence
                 return {
                     'status': 'REJECTED',
                     'priority': 'N/A',
                     'message': f'Document is significantly handwritten ({handwriting_pct:.1f}% handwriting) - only printed documents are accepted'
                 }
         
+        # Handwriting 30-39% - check Florence if OCR is good
+        if handwriting_pct is not None and handwriting_pct >= 30 and handwriting_pct < 40:
+            if ocr_confidence is not None and ocr_confidence >= 60:
+                # Good OCR - check Florence for false positive
+                florence_override = self._check_florence_override(
+                    image_path, ocr_confidence, handwriting_pct
+                )
+                if florence_override and florence_override.get('is_printed'):
+                    # Florence confirms printed - accept
+                    logger.info(
+                        f"Florence override: Document classified as printed "
+                        f"(confidence: {florence_override.get('confidence', 0):.2f})"
+                    )
+                    return {
+                        'status': 'ACCEPTED',
+                        'priority': 'Normal',
+                        'message': f'Document accepted - Florence-2 confirmed printed text (confidence: {florence_override.get("confidence", 0):.1%}). Handwriting detection was false positive.',
+                        'florence_override': {
+                            'applied': True,
+                            'is_printed': True,
+                            'confidence': florence_override.get('confidence', 0),
+                            'explanation': florence_override.get('explanation', '')[:200]
+                        }
+                    }
+                # If Florence doesn't confirm, continue to other checks (don't reject immediately)
+        
         # Handwritten + spread out (even if lower percentage) - but discount if blurry
         if (handwriting_pct is not None and handwriting_pct >= 25 and is_spread_out):
-            # If blurry and OCR is reasonable, discount handwriting detection
-            if is_blurry and ocr_confidence is not None and ocr_confidence >= 50:
-                # Blurry scanned document - handwriting detection unreliable
-                pass  # Don't reject for handwriting
+            # Spread-out handwriting is a strong indicator of actually handwritten documents
+            # But if OCR is high, it might be a false positive from blur/scanning artifacts
+            if handwriting_pct >= 40:
+                # Very high handwriting percentage spread out - likely actually handwritten
+                # Only check Florence if OCR is very high (>= 80%)
+                if ocr_confidence is not None and ocr_confidence >= 80:
+                    florence_override = self._check_florence_override(
+                        image_path, ocr_confidence, handwriting_pct
+                    )
+                    if florence_override and florence_override.get('is_printed'):
+                        logger.info(
+                            f"Florence override: Spread handwriting is false positive "
+                            f"(confidence: {florence_override.get('confidence', 0):.2f})"
+                        )
+                        return {
+                            'status': 'ACCEPTED',
+                            'priority': 'Normal',
+                            'message': f'Document accepted - Florence-2 confirmed printed text (confidence: {florence_override.get("confidence", 0):.1%}). Spread handwriting detection was false positive.',
+                            'florence_override': {
+                                'applied': True,
+                                'is_printed': True,
+                                'confidence': florence_override.get('confidence', 0),
+                                'explanation': florence_override.get('explanation', '')[:200]
+                            }
+                        }
+                    else:
+                        return {
+                            'status': 'REJECTED',
+                            'priority': 'N/A',
+                            'message': f'Handwritten text throughout document ({handwriting_pct:.1f}% handwriting spread across document)'
+                        }
+                else:
+                    return {
+                        'status': 'REJECTED',
+                        'priority': 'N/A',
+                        'message': f'Handwritten text throughout document ({handwriting_pct:.1f}% handwriting spread across document)'
+                    }
+            elif ocr_confidence is not None and ocr_confidence >= 60:
+                # Medium-high handwriting spread out - check Florence if OCR is good
+                florence_override = self._check_florence_override(
+                    image_path, ocr_confidence, handwriting_pct
+                )
+                if florence_override and florence_override.get('is_printed'):
+                    logger.info(
+                        f"Florence override: Spread handwriting is false positive "
+                        f"(confidence: {florence_override.get('confidence', 0):.2f})"
+                    )
+                    return {
+                        'status': 'ACCEPTED',
+                        'priority': 'Normal',
+                        'message': f'Document accepted - Florence-2 confirmed printed text (confidence: {florence_override.get("confidence", 0):.1%}). Spread handwriting detection was false positive.',
+                        'florence_override': {
+                            'applied': True,
+                            'is_printed': True,
+                            'confidence': florence_override.get('confidence', 0),
+                            'explanation': florence_override.get('explanation', '')[:200]
+                        }
+                    }
+                else:
+                    return {
+                        'status': 'REJECTED',
+                        'priority': 'N/A',
+                        'message': f'Handwritten text throughout document ({handwriting_pct:.1f}% handwriting spread across document)'
+                    }
             else:
+                # OCR not high enough - reject spread-out handwriting
                 return {
                     'status': 'REJECTED',
                     'priority': 'N/A',
@@ -208,6 +442,25 @@ class PipelineOrchestrator:
             is_extreme_blur = blur_score is not None and blur_score < blur_extreme_threshold
             
             if is_readable and not is_extreme_blur:
+                # Check Florence for handwriting false positives BEFORE filtering
+                # If Florence confirms printed, we can safely filter handwriting failures
+                handwriting_critical = [f for f in all_critical if 'handwriting' in f.lower()]
+                if handwriting_critical and image_path:
+                    # Check Florence to verify if handwriting is false positive
+                    florence_override = self._check_florence_override(
+                        image_path, ocr_confidence, handwriting_pct
+                    )
+                    if florence_override and florence_override.get('is_printed'):
+                        # Florence confirms printed - filter out handwriting failures
+                        logger.info(
+                            f"Florence confirmed printed (confidence: {florence_override.get('confidence', 0):.2f}) - "
+                            f"filtering handwriting false positive"
+                        )
+                        all_critical = [
+                            f for f in all_critical 
+                            if 'handwriting' not in f.lower()
+                        ]
+                
                 # Filter out blur and handwriting issues for readable documents (but not extreme blur)
                 filtered_critical = [
                     f for f in all_critical 
@@ -341,6 +594,124 @@ class PipelineOrchestrator:
         
         # No consensus decision - use scoring system
         return None
+    
+    def _check_florence_override(
+        self, 
+        image_path: Optional[str], 
+        ocr_confidence: Optional[float], 
+        handwriting_pct: Optional[float]
+    ) -> Optional[Dict]:
+        """
+        Check if Florence-2 should override handwriting detection.
+        Only called when handwriting is detected AND OCR confidence is good.
+        Uses conservative thresholds to avoid false positives.
+        
+        Args:
+            image_path: Path to image file
+            ocr_confidence: OCR confidence percentage
+            handwriting_pct: Handwriting percentage detected
+            
+        Returns:
+            Florence classification result dict or None
+        """
+        # Only use Florence if:
+        # 1. Florence is available and enabled
+        # 2. Image path is provided
+        # 3. OCR confidence is >= 50% (readable - lower threshold to catch more cases)
+        # 4. Handwriting is detected (>= 20%)
+        # 5. For higher handwriting, require higher OCR
+        if (not FLORENCE_AVAILABLE or 
+            not self.florence_classifier or 
+            not image_path or 
+            ocr_confidence is None or 
+            ocr_confidence < 50 or  # Require readable OCR (50%)
+            handwriting_pct is None or
+            handwriting_pct < 20):
+            return None
+        
+        # For higher handwriting percentages, require higher OCR
+        # BUT: Lower thresholds to catch more false positives (bold text cases)
+        if handwriting_pct >= 40:
+            # Very high handwriting - check if OCR is good (>= 70% - lowered from 80%)
+            # Bold text can cause high handwriting detection, so be more lenient
+            if ocr_confidence < 70:
+                return None
+        elif handwriting_pct >= 35:
+            # High handwriting - require OCR >= 65% (lowered from 70%)
+            if ocr_confidence < 65:
+                return None
+        elif handwriting_pct >= 30:
+            # Medium-high handwriting - require OCR >= 60%
+            if ocr_confidence < 60:
+                return None
+        
+        try:
+            logger.info(
+                f"Checking Florence override: OCR={ocr_confidence:.1f}%, "
+                f"Handwriting={handwriting_pct:.1f}%"
+            )
+            result = self.florence_classifier.classify_document(image_path)
+            
+            if result.get('error'):
+                logger.warning(f"Florence classification error: {result.get('error')}")
+                return None
+            
+            # VERY CONSERVATIVE OVERRIDE: Only override if Florence is EXTREMELY confident it's printed
+            # Require very high confidence (>= 0.85) to override rejection
+            # Also validate OCR - handwritten documents typically have lower OCR even if readable
+            florence_confidence = result.get('confidence', 0)
+            is_printed = result.get('is_printed', False)
+            
+            if not is_printed:
+                # Florence says it's handwritten - don't override, REJECT
+                # This is a critical safeguard - even if OCR is high, handwritten is handwritten
+                logger.warning(
+                    f"Florence confirmed HANDWRITTEN (confidence: {florence_confidence:.2f}) - "
+                    f"REJECTING document despite OCR: {ocr_confidence:.1f}%, Handwriting: {handwriting_pct:.1f}%"
+                )
+                return {
+                    'is_printed': False,
+                    'confidence': florence_confidence,
+                    'explanation': result.get('explanation', ''),
+                    'reject_reason': 'Florence-2 confirmed document is handwritten'
+                }
+            
+            # Adjust confidence threshold based on handwriting percentage and OCR
+            # Higher handwriting OR lower OCR requires higher Florence confidence
+            if handwriting_pct >= 40:
+                required_confidence = 0.75  # Lowered from 0.80 - be more lenient for bold text cases
+            elif handwriting_pct >= 35:
+                required_confidence = 0.70  # Lowered from 0.75
+            elif handwriting_pct >= 30:
+                required_confidence = 0.65  # Lowered from 0.70
+            else:
+                required_confidence = 0.60  # Lowered from 0.65
+            
+            # If OCR is very high (>= 80%), we can be more lenient with Florence confidence
+            # This helps catch bold text false positives
+            if ocr_confidence >= 80:
+                required_confidence = max(0.60, required_confidence - 0.10)  # Reduce by 0.10 if OCR very high
+            elif ocr_confidence >= 75:
+                required_confidence = max(0.60, required_confidence - 0.05)  # Reduce by 0.05 if OCR high
+            
+            if florence_confidence < required_confidence:
+                # Florence says printed but confidence too low - don't override
+                logger.info(
+                    f"Florence says printed but confidence too low ({florence_confidence:.2f} < {required_confidence:.2f}) - "
+                    f"not overriding rejection"
+                )
+                return None
+            
+            # All checks passed - safe to override
+            logger.info(
+                f"Florence override approved: Printed (confidence: {florence_confidence:.2f}), "
+                f"OCR: {ocr_confidence:.1f}%, Handwriting: {handwriting_pct:.1f}%"
+            )
+            return result
+            
+        except Exception as e:
+            logger.error(f"Florence override check failed: {e}", exc_info=True)
+            return None
     
     def determine_status(self, final_score: float, has_critical_failures: bool, ocr_confidence: Optional[float] = None, stage_results: Optional[List[Dict]] = None) -> Dict:
         """
@@ -629,8 +1000,14 @@ class PipelineOrchestrator:
                     resolution=page_resolution,
                     stage1_critical=page_stage1_result.get('critical_failures', []) if page_stage1_result else [],
                     stage2_critical=page_stage2_result.get('critical_failures', []) if page_stage2_result else [],
-                    stage3_critical=page_stage3_result.get('critical_failures', []) if page_stage3_result else []
+                    stage3_critical=page_stage3_result.get('critical_failures', []) if page_stage3_result else [],
+                    image_path=image_path  # Pass image path for Florence override
                 )
+                
+                # Extract Florence override info if present
+                florence_info = None
+                if consensus_status:
+                    florence_info = consensus_status.get('florence_override')
                 
                 # Calculate final quality score for this page
                 page_final_score = self.calculate_final_quality_score(page_stage_results)
@@ -640,7 +1017,7 @@ class PipelineOrchestrator:
                 if consensus_status is None:
                     page_status_info = self.determine_status(page_final_score, page_has_critical_failures, page_ocr_confidence, page_stage_results)
                 else:
-                    page_status_info = consensus_status
+                    page_status_info = consensus_status.copy()
                     if page_status_info['status'] == 'REJECTED':
                         page_has_critical_failures = True
                 
@@ -659,6 +1036,10 @@ class PipelineOrchestrator:
                     'handwriting_percentage': page_handwriting_pct,
                     'stage_results': page_stage_results
                 }
+                
+                # Add Florence override info if available
+                if florence_info:
+                    page_result['florence_override'] = florence_info
                 
                 page_results.append(page_result)
                 
@@ -806,7 +1187,16 @@ class PipelineOrchestrator:
         
         processing_time = round(time.time() - start_time, 2)
         
-        return {
+        # Check if any page had Florence override
+        florence_override_used = False
+        florence_override_info = None
+        for page_result in page_results:
+            if page_result.get('florence_override'):
+                florence_override_used = True
+                florence_override_info = page_result.get('florence_override')
+                break  # Use first override found
+        
+        result = {
             'success': True,
             'file_path': file_path,
             'file_type': 'PDF' if is_pdf else 'Image',
@@ -824,4 +1214,10 @@ class PipelineOrchestrator:
             'page_results': page_results,  # Results for each page
             'best_page': best_page_result['page_number'] if best_page_result else 1
         }
+        
+        # Add Florence override info if used
+        if florence_override_used and florence_override_info:
+            result['florence_override'] = florence_override_info
+        
+        return result
 
