@@ -147,6 +147,15 @@ class FlorenceHandwritingClassifier:
             else:
                 image = image_path_or_pil.convert('RGB')
             
+            # OPTIMIZATION: Resize large images to speed up processing
+            # Florence-2 works well with smaller images and processes much faster
+            max_size = 1024  # Maximum dimension
+            if max(image.size) > max_size:
+                ratio = max_size / max(image.size)
+                new_size = (int(image.size[0] * ratio), int(image.size[1] * ratio))
+                image = image.resize(new_size, Image.Resampling.LANCZOS)
+                logger.debug(f"Resized image from {image_path_or_pil if isinstance(image_path_or_pil, str) else 'PIL'} to {new_size} for faster processing")
+            
             # Default prompt optimized for document classification
             if prompt is None:
                 prompt = "<MORE_DETAILED_CAPTION>"
@@ -155,17 +164,18 @@ class FlorenceHandwritingClassifier:
             inputs = self.processor(text=prompt, images=image, return_tensors="pt").to(self.device)
             
             with torch.no_grad():
-                # Fix for Florence-2 past_key_values issue: explicitly set use_cache=False
-                # or provide empty past_key_values
+                # OPTIMIZATION: Reduce max_new_tokens significantly - we only need classification, not long descriptions
+                # Reduced from 512 to 50 tokens - much faster while still getting classification info
                 try:
                     generated_ids = self.model.generate(
                         input_ids=inputs["input_ids"],
                         pixel_values=inputs["pixel_values"],
-                        max_new_tokens=512,
-                        num_beams=1,
+                        max_new_tokens=50,  # Reduced from 512 - we only need classification, not full description
+                        num_beams=1,  # Greedy decoding (fastest)
                         do_sample=False,
                         use_cache=False,  # Disable cache to avoid past_key_values issues
-                        pad_token_id=self.processor.tokenizer.pad_token_id or self.processor.tokenizer.eos_token_id
+                        pad_token_id=self.processor.tokenizer.pad_token_id or self.processor.tokenizer.eos_token_id,
+                        early_stopping=True  # Stop early if possible
                     )
                 except AttributeError as e:
                     # Fallback: try with minimal parameters
@@ -173,8 +183,9 @@ class FlorenceHandwritingClassifier:
                     generated_ids = self.model.generate(
                         input_ids=inputs["input_ids"],
                         pixel_values=inputs["pixel_values"],
-                        max_new_tokens=256,
-                        do_sample=False
+                        max_new_tokens=30,  # Even smaller for fallback
+                        do_sample=False,
+                        early_stopping=True
                     )
             
             generated_text = self.processor.batch_decode(generated_ids, skip_special_tokens=False)[0]

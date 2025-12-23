@@ -6,6 +6,7 @@ Coordinates all stages of the document quality verification pipeline.
 import os
 import time
 import logging
+import threading
 from typing import Dict, List, Optional
 from dotenv import load_dotenv
 
@@ -620,6 +621,7 @@ class PipelineOrchestrator:
         # 3. OCR confidence is >= 50% (readable - lower threshold to catch more cases)
         # 4. Handwriting is detected (>= 20%)
         # 5. For higher handwriting, require higher OCR
+        # OPTIMIZATION: Skip Florence if OCR is extremely high (>= 90%) - trust OCR in these cases
         if (not FLORENCE_AVAILABLE or 
             not self.florence_classifier or 
             not image_path or 
@@ -628,6 +630,15 @@ class PipelineOrchestrator:
             handwriting_pct is None or
             handwriting_pct < 20):
             return None
+        
+        # OPTIMIZATION: Skip Florence for extremely high OCR (>= 90%) - saves processing time
+        # If OCR can read it at 90%+, it's definitely readable printed text
+        if ocr_confidence >= 90 and handwriting_pct < 50:
+            logger.info(
+                f"Skipping Florence check - OCR is extremely high ({ocr_confidence:.1f}%) "
+                f"and handwriting is moderate ({handwriting_pct:.1f}%) - trusting OCR"
+            )
+            return None  # Skip Florence, trust OCR
         
         # For higher handwriting percentages, require higher OCR
         # BUT: Lower thresholds to catch more false positives (bold text cases)
@@ -650,7 +661,37 @@ class PipelineOrchestrator:
                 f"Checking Florence override: OCR={ocr_confidence:.1f}%, "
                 f"Handwriting={handwriting_pct:.1f}%"
             )
-            result = self.florence_classifier.classify_document(image_path)
+            
+            # OPTIMIZATION: Add timeout for Florence processing (max 30 seconds)
+            # If Florence takes too long, skip it and use other signals
+            florence_result = [None]
+            florence_error = [None]
+            
+            def run_florence():
+                try:
+                    florence_result[0] = self.florence_classifier.classify_document(image_path)
+                except Exception as e:
+                    florence_error[0] = str(e)
+            
+            florence_thread = threading.Thread(target=run_florence, daemon=True)
+            florence_thread.start()
+            florence_thread.join(timeout=30)  # 30 second timeout
+            
+            if florence_thread.is_alive():
+                logger.warning(
+                    f"Florence processing timed out after 30 seconds - skipping Florence check. "
+                    f"Using other signals for decision (OCR: {ocr_confidence:.1f}%, Handwriting: {handwriting_pct:.1f}%)"
+                )
+                return None  # Skip Florence if it times out
+            
+            if florence_error[0]:
+                logger.warning(f"Florence classification error: {florence_error[0]}")
+                return None
+            
+            result = florence_result[0]
+            if result is None:
+                logger.warning("Florence returned None result")
+                return None
             
             if result.get('error'):
                 logger.warning(f"Florence classification error: {result.get('error')}")
@@ -912,7 +953,7 @@ class PipelineOrchestrator:
                         'critical_failures': [],
                         'warnings': []
                     })
-                
+        
                 # Extract metrics for this page
                 page_stage1_result = next((r for r in page_stage_results if 'Basic Quality Checks' in r.get('stage', '')), None)
                 page_stage2_result = next((r for r in page_stage_results if 'OCR Confidence Analysis' in r.get('stage', '')), None)
