@@ -21,20 +21,25 @@ class PDFConverter:
         """
         self.dpi = dpi
     
-    def convert_pdf_to_images(self, pdf_path: str, output_dir: Optional[str] = None) -> List[str]:
+    def convert_pdf_to_images(self, pdf_path: str, output_dir: Optional[str] = None, first_page_only: bool = False) -> List[str]:
         """
         Convert PDF to list of image file paths.
         
         Args:
             pdf_path: Path to PDF file
             output_dir: Directory to save images (optional)
+            first_page_only: If True, only convert first page (for quick detection)
             
         Returns:
             List of image file paths
         """
         try:
             # Convert PDF to images
-            images = convert_from_path(pdf_path, dpi=self.dpi)
+            if first_page_only:
+                # Only convert first page
+                images = convert_from_path(pdf_path, dpi=self.dpi, first_page=1, last_page=1)
+            else:
+                images = convert_from_path(pdf_path, dpi=self.dpi)
             
             image_paths = []
             base_name = os.path.splitext(os.path.basename(pdf_path))[0]

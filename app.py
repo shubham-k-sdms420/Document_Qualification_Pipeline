@@ -764,7 +764,11 @@ def bulk_process_documents_from_urls():
                 'success': False,
                 'error': 'Request must be JSON with Content-Type: application/json'
             }), 400
-        
+        if request.headers.get("Authorization") != os.getenv('APP_TOKEN'):
+            return jsonify({
+                'success': False,
+                'error': 'Unauthorized'
+            }), 401
         data = request.get_json()
         
         # Check if URLs are provided

@@ -1,0 +1,17 @@
+{
+    "doc_url": "https://example.com/doc1.pdf",
+    "fields": [
+        {
+        "field_name": "dob",
+        "expected_value": "1990-01-01",
+            "extracted_value": "1990-01-01",
+            "confidence": 0.95
+        },
+        {
+            "field_name": "name",
+            "expected_value": "John Doe",
+            "extracted_value": "John Doe",
+            "confidence": 0.95
+        }
+    ]
+}

@@ -1,751 +1,139 @@
 # Document Quality Verification Pipeline
 
-A comprehensive, modular system for automatically verifying the quality of government documents (No Dues Certificates, NOC Documents, Index II) before processing them with LLMs. This system runs entirely on local infrastructure with zero ongoing costs.
+Automated quality verification system for government documents (NOC, No Dues, Index-II) before LLM processing. **100% local processing, zero ongoing costs.**
 
-## 🎯 Overview
-
-This pipeline automatically filters out low-quality documents before they reach your LLM for processing, saving money, improving accuracy, and reducing manual review work.
-
-### What This System Does
-
-- **Accepts**: Readable documents (OCR can extract text), printed text, documents with signatures/stamps, scanned documents (even if slightly blurry but readable)
-- **Rejects**: Truly unreadable documents (OCR cannot read), handwritten documents, dark/washed-out scans, low resolution images, documents that cannot be processed by LLM
-- **Features**: 
-  - Single document upload with detailed stage-by-stage analysis
-  - **Bulk upload** - Process up to 50 documents at once with summary results
-  - **Multi-page PDF processing** - Processes all pages and evaluates based on best page or content page (page 2 for 2-page documents)
-  - **URL-based processing** - Download and process documents from URLs (for RTS API integration)
-  - **Swagger API documentation** - Interactive API docs at `/api/docs`
-  - **Florence-2 integration** - Optional AI-powered handwriting verification to reduce false positives
-
-**Key Principle**: If OCR can read the document (≥ 50% confidence), it's accepted even if image quality metrics are lower. Readability is prioritized over perfect image quality.
-
-### Benefits
-
-- **50-60% cost reduction** in LLM API costs
-- **70-80% reduction** in manual review workload
-- **Better accuracy** from higher quality inputs
-- **Clear feedback** to users about document issues
-- **100% local processing** - no API keys or cloud services required
-
-## 🏗️ System Architecture
-
-The system uses a 4-stage cascading filter. Each stage is faster and cheaper than the next. Documents must pass ALL stages to be accepted.
-
-### Stage 1: Basic Quality Checks (OpenCV)
-
-- **Processing Time**: 50-100ms
-- **Checks**: Resolution, Blur, Brightness, Contrast, White Space, Skew, Corruption
-- **Status Logic**: Stage passes if no critical failures (warnings don't cause failure)
-- **Rejects**: 20-30% of uploads
-
-### Stage 2: OCR Confidence Analysis (Tesseract)
-
-- **Processing Time**: 2-5 seconds
-- **Checks**: Text readability, Confidence scores, Text regions, Character count
-- **Rejects**: 30-40% of documents that passed Stage 1
-
-### Stage 3: Handwriting Detection (Computer Vision)
-
-- **Processing Time**: 0.5-2 seconds
-- **Checks**: Stroke width variance, Baseline variance, Character spacing, Connected components
-- **Rejects**: 10-20% of documents that passed Stage 2
-- **Florence-2 Integration**: Optional AI-powered verification to reduce false positives (e.g., bold text)
-
-### Stage 4: Overall Quality Score (BRISQUE)
-
-- **Processing Time**: 100-200ms
-- **Checks**: Blind image quality assessment
-- **Rejects**: 5-10% of documents that passed Stage 3
-
-## 📋 Prerequisites
-
-### System Requirements
-
-- **Python**: 3.8 or higher
-- **CPU**: Any modern processor (2+ cores recommended)
-- **RAM**: 2GB minimum (4GB recommended)
-- **Storage**: 500MB for dependencies
-
-### Required System Packages
-
-#### Tesseract OCR
-
-```bash
-# Ubuntu/Debian
-sudo apt-get install tesseract-ocr
-
-# macOS
-brew install tesseract
-
-# Windows
-# Download from https://github.com/UB-Mannheim/tesseract/wiki
-```
-
-#### Poppler (for PDF processing)
-
-```bash
-# Ubuntu/Debian
-sudo apt-get install poppler-utils
-
-# macOS
-brew install poppler
-
-# Windows
-# Download from https://github.com/oschwartz10612/poppler-windows/releases
-```
-
-## 🚀 Installation
-
-### Step 1: Clone or Navigate to Project Directory
+## Quick Start
 
 ```bash
 cd /home/stark/Desktop/Doc_verifier_Qualification_Pipeline
-```
-
-### Step 2: Run Setup Script
-
-```bash
-chmod +x setup.sh
-./setup.sh
-```
-
-This will:
-
-- Create a virtual environment
-- Install all Python dependencies
-- Create necessary directories
-- Check for system dependencies
-
-### Step 3: Activate Virtual Environment
-
-```bash
+chmod +x setup.sh && ./setup.sh
 source venv/bin/activate
-```
-
-### Step 4: Create .env File
-
-```bash
 cp env.example .env
-```
-
-Edit `.env` file to adjust configuration if needed.
-
-### Step 5: Start the Server
-
-```bash
 python app.py
 ```
 
-The server will start on `http://localhost:5000`
+Access: `http://localhost:5000` | API Docs: `http://localhost:5000/api/docs`
 
-## 📁 Project Structure
+## What It Does
 
-```
-Doc_verifier_Qualification_Pipeline/
-├── app.py                      # Flask backend API
-├── requirements.txt            # Python dependencies
-├── env.example                 # Environment variables template
-├── setup.sh                    # Setup script
-├── README.md                   # This file
-├── src/
-│   ├── __init__.py
-│   ├── stages/                 # Pipeline stages (modular components)
-│   │   ├── __init__.py
-│   │   ├── stage1_basic_quality.py
-│   │   ├── stage2_ocr_confidence.py
-│   │   ├── stage3_handwriting_detection.py
-│   │   └── stage4_brisque_quality.py
-│   ├── utils/                  # Utility modules
-│   │   ├── __init__.py
-│   │   ├── pdf_converter.py
-│   │   └── image_processor.py
-│   └── pipeline/               # Pipeline orchestrator
-│       ├── __init__.py
-│       └── orchestrator.py
-├── frontend/                   # Frontend interface
-│   ├── index.html              # Single & bulk upload tabs
-│   ├── styles.css              # Styling for both modes
-│   └── script.js               # Single & bulk upload logic
-├── src/
-│   ├── utils/                  # Utility modules
-│   │   ├── document_downloader.py  # URL-based document downloader
-│   │   ├── florence_classifier.py  # Florence-2 AI classifier (optional)
-│   │   ├── pdf_converter.py
-│   │   └── image_processor.py
-│   └── pipeline/
-│       └── orchestrator.py    # Main pipeline coordinator
-├── uploads/                    # Uploaded files (created automatically)
-├── downloads/                  # Downloaded files from URLs (created automatically)
-├── cache/                      # Temporary files (created automatically)
-└── logs/                       # Log files (created automatically)
-```
+**Accepts:** Readable printed documents (OCR ≥ 50%), documents with signatures/stamps, slightly blurry but readable scans  
+**Rejects:** Unreadable documents (OCR < 25%), handwritten documents, corrupted files
 
-## 🔧 Configuration
+**Key Principle:** If OCR can read it (≥ 50%), accept even if image quality is imperfect.
 
-All configuration is done through the `.env` file. Key settings:
+## Features
 
-### Flask Configuration
+- Single & bulk upload (up to 50 documents)
+- Multi-page PDF processing (smart page selection)
+- URL-based processing (RTS API integration)
+- Index-II specialized processor (lenient validation)
+- Swagger API documentation
+- Simplified user messages (no technical jargon)
 
-- `FLASK_HOST`: Server host (default: 0.0.0.0)
-- `FLASK_PORT`: Server port (default: 5000)
-- `FLASK_DEBUG`: Debug mode (default: True)
+## System Architecture
 
-### File Upload Configuration
+4-stage cascading filter (3-8 seconds per document):
 
-- `MAX_UPLOAD_SIZE`: Maximum file size in bytes (default: 10485760 = 10MB)
-- `MAX_BULK_FILES`: Maximum number of files per bulk upload (default: 50)
-- `UPLOAD_FOLDER`: Directory for uploaded files (default: uploads)
-- `ALLOWED_EXTENSIONS`: Comma-separated list (default: pdf,png,jpg,jpeg)
+1. **Basic Quality** (50-100ms, 35% weight): Resolution, blur, brightness, contrast
+2. **OCR Confidence** (2-5s, 40% weight): Text readability, confidence scores
+3. **Handwriting Detection** (0.5-2s, 20% weight): Printed vs handwritten
+4. **BRISQUE Quality** (100-200ms, 5% weight): Overall image quality
 
-### Document Download Configuration (for URL-based processing)
+## Installation
 
-- `DOWNLOAD_FOLDER`: Directory for downloaded files (default: downloads)
-- `DOWNLOAD_TIMEOUT`: Request timeout in seconds (default: 30)
-
-### Quality Thresholds
-
-Adjust these values to fine-tune the quality checks:
-
-- `RESOLUTION_MIN_WIDTH`: Minimum image width (default: 400 critical, 800 recommended)
-- `BLUR_THRESHOLD`: Blur detection threshold (default: 60 warning, 30 critical)
-- `BRIGHTNESS_CRITICAL_MAX`: Maximum brightness threshold (default: 300 - documents with brightness up to 300 are accepted)
-- `BRIGHTNESS_CRITICAL_MIN`: Minimum brightness threshold (default: 15)
-- `OCR_AVG_CONFIDENCE_THRESHOLD`: OCR confidence threshold (default: 45 warning, 25 critical)
-- `HANDWRITING_THRESHOLD`: Handwriting detection threshold (default: 15 warning, 30 critical)
-- `BRISQUE_THRESHOLD`: BRISQUE quality threshold (default: 80)
-
-
-## 🎨 Usage
-
-### Web Interface
-
-#### Single Document Upload
-
-1. Open your browser and navigate to `http://localhost:5000`
-2. The interface explains all 4 stages of quality checks
-3. Click on "Single Upload" tab (default)
-4. Upload a document (PDF or image) - drag & drop or click to browse
-5. Click "Process Document"
-6. View detailed results for each stage
-7. **For multi-page PDFs**: System processes all pages and shows which page was used for evaluation (page 2 for 2-page docs, best page for 3+ page docs)
-
-#### Bulk Document Upload
-
-1. Click on "Bulk Upload" tab
-2. Select multiple files (or drag & drop multiple files)
-3. View selected files list
-4. Click "Process All Documents"
-5. View results table with:
-   - Status (Accepted/Rejected/Flagged for Review)
-   - Quality Score
-   - OCR Confidence %
-   - One-line reason
-   - Processing time
-6. Summary statistics show total, accepted, rejected, and flagged counts
-
-### API Endpoints
-
-#### Health Check
+### Prerequisites
 
 ```bash
-GET /api/health
+# Ubuntu/Debian
+sudo apt-get install tesseract-ocr poppler-utils
+
+# macOS
+brew install tesseract poppler
 ```
 
-#### Upload and Process Document
+### Setup
 
 ```bash
-POST /api/upload
-Content-Type: multipart/form-data
-
-Form data:
-- file: (PDF or image file)
-```
-
-Response:
-
-```json
-{
-  "success": true,
-  "file_path": "...",
-  "file_type": "PDF",
-  "total_pages": 2,
-  "best_page": 2,
-  "processing_time_seconds": 3.45,
-  "final_quality_score": 85.5,
-  "status": "ACCEPTED",
-  "priority": "High",
-  "message": "Document accepted based on page 2 (content page). Quality acceptable",
-  "page_results": [
-    {
-      "page_number": 1,
-      "status": "REJECTED",
-      "final_quality_score": 45.2,
-      "ocr_confidence": 30.1
-    },
-    {
-      "page_number": 2,
-      "status": "ACCEPTED",
-      "final_quality_score": 85.5,
-      "ocr_confidence": 84.4
-    }
-  ],
-  "stage_results": [...]
-}
-```
-
-#### Bulk Upload and Process Multiple Documents
-
-```bash
-POST /api/bulk-upload
-Content-Type: multipart/form-data
-
-Form data:
-- files[]: (Multiple PDF or image files)
-```
-
-Response:
-```json
-{
-  "success": true,
-  "summary": {
-    "total_files": 5,
-    "successful": 5,
-    "failed": 0,
-    "accepted": 3,
-    "rejected": 1,
-    "flagged_for_review": 1
-  },
-  "results": [
-    {
-      "filename": "document1.pdf",
-      "status": "ACCEPTED",
-      "score": 85.5,
-      "ocr_confidence": 92.3,
-      "reason": "Quality acceptable - send to LLM for processing",
-      "processing_time": 3.45
-    },
-    ...
-  ],
-  "errors": []
-}
-```
-
-#### Process Document from URL
-
-```bash
-POST /api/process-url
-Content-Type: application/json
-
-{
-  "url": "https://example.com/document.pdf",
-  "filename": "custom_name"  // optional
-}
-```
-
-Response: Same format as `/api/upload` with additional fields:
-- `source`: "url"
-- `source_url`: Original URL
-- `downloaded_filename`: Saved filename
-
-#### Bulk Process Documents from URLs
-
-```bash
-POST /api/bulk-process-urls
-Content-Type: application/json
-
-{
-  "urls": [
-    "https://example.com/doc1.pdf",
-    "https://example.com/doc2.pdf"
-  ],
-  "filenames": ["doc1", "doc2"]  // optional
-}
-```
-
-Response: Same format as `/api/bulk-upload`
-
-#### Get Stages Information
-
-```bash
-GET /api/stages
-```
-
-#### Swagger API Documentation
-
-```bash
-GET /api/docs
-```
-
-Interactive Swagger UI for testing all endpoints directly from the browser.
-
-## 📊 Quality Score Calculation
-
-The final quality score (0-100) is calculated using a weighted formula:
-
-```
-Quality Score = (Stage 1 × 0.35) +
-                (Stage 2 × 0.40) +
-                (Stage 3 × 0.20) +
-                (Stage 4 × 0.05)
-```
-
-### Score Thresholds
-
-- **≥ 70**: Accept (or ≥ 60 with leniency)
-- **50-69**: Flag for review (unless OCR is high - see below)
-- **< 50**: Reject
-
-### Lenient Acceptance for Readable Documents
-
-The system prioritizes **readability** over perfect image quality:
-
-- **OCR ≥ 80%**: Accept with score ≥ 55 (very readable documents)
-- **OCR ≥ 60%**: Accept with score ≥ 60 (readable documents)
-- **OCR ≥ 50%**: Blur/handwriting false positives are filtered (readable despite image quality issues)
-- **Standard**: Score ≥ 70 (or ≥ 60 with leniency)
-
-**Rationale**: If OCR can read the document, it can be processed by LLM, even if image quality metrics are imperfect.
-
-## 🧪 Testing
-
-Test the system with sample documents from the `Documents/` folder:
-
-```bash
-# Activate virtual environment
+./setup.sh
 source venv/bin/activate
-
-# Test with a sample document
-python -c "
-from src.pipeline.orchestrator import PipelineOrchestrator
-orchestrator = PipelineOrchestrator()
-result = orchestrator.process_document('Documents/No_Dues1.pdf')
-print(result)
-"
+cp env.example .env
+python app.py
 ```
 
-## 🔍 Troubleshooting
+## Configuration (.env)
 
-### Tesseract Not Found
-
-```bash
-# Install Tesseract OCR
-sudo apt-get install tesseract-ocr
-
-# Verify installation
-tesseract --version
-```
-
-### Poppler Not Found
-
-```bash
-# Install Poppler
-sudo apt-get install poppler-utils
-
-# Verify installation
-pdftoppm -h
-```
-
-### Import Errors
-
-Make sure you've activated the virtual environment:
-
-```bash
-source venv/bin/activate
-```
-
-### Port Already in Use
-
-Change the port in `.env`:
-
-```
-FLASK_PORT=5001
-```
-
-## 📈 Performance Metrics
-
-Based on testing with government documents:
-
-- **Processing Time**: 3-8 seconds per document
-- **Accuracy**: 85%+ correct decisions
-- **False Positive Rate**: < 5% (good docs rejected) - improved with OCR-based filtering
-- **False Negative Rate**: < 5% (bad docs accepted)
-- **Final Acceptance Rate**: 50-55% reach LLM (increased due to better handling of scanned documents)
-- **Cost Savings**: 50-60% LLM cost reduction
-
-## 🔄 Recent Improvements (December 2025)
-
-### OCR Confidence as Primary Signal
-
-- **Blur Rejection**: Now only rejects for blur if OCR confidence is also low (< 30%). If OCR ≥ 50%, blur becomes a warning, not a rejection.
-- **Readability First**: System prioritizes whether OCR can read the document over perfect image quality metrics.
-
-### Handwriting Detection Improvements
-
-- **Blurry Scanned Documents**: Handwriting false positives are filtered when document is blurry but OCR can read it (≥ 50% confidence).
-- **Signatures/Stamps**: Documents with concentrated handwriting (15-30%) are accepted if OCR ≥ 30% (reduced from 75% requirement).
-- **Bold Text Handling**: Fixed false positives where bold text was misclassified as handwriting. System now trusts high OCR (≥ 80%) over handwriting detection for bold text cases.
-- **Florence-2 Integration**: Optional AI-powered verification to reduce handwriting false positives. Only called when handwriting is detected but OCR is high (≥ 50%).
-
-### Lenient Acceptance Logic
-
-- **High OCR (≥ 80%)**: Accept with score ≥ 55, trust OCR over handwriting detection
-- **Good OCR (≥ 60%)**: Accept with score ≥ 60
-- **Readable OCR (≥ 50%)**: Filter out blur/handwriting false positives
-
-### New Features
-
-- **URL-Based Processing**: Download and process documents from URLs via `/api/process-url` and `/api/bulk-process-urls` endpoints
-- **RTS API Integration**: Support for processing documents from external APIs (like RTS website)
-- **Swagger Documentation**: Interactive API documentation at `/api/docs` for testing all endpoints
-- **Enhanced Safeguards**: Multiple layers of protection to prevent accepting handwritten documents even with high OCR
-
-
-## OCR thresholds — acceptance and rejection
-
-### Stage 2: OCR confidence analysis thresholds
-
-| Parameter                    | Threshold | Purpose                       | Action                             |
-| ---------------------------- | --------- | ----------------------------- | ---------------------------------- |
-| OCR_CRITICAL_THRESHOLD       | 25%       | Critical failure              | ❌ REJECTED - Document unreadable  |
-| OCR_AVG_CONFIDENCE_THRESHOLD | 45%       | Warning threshold             | ⚠️ Warning - Below recommended   |
-| OCR_HIGH_CONFIDENCE_SCORE    | 70%       | High confidence words         | Count words with ≥ 70% confidence |
-| OCR_HIGH_CONFIDENCE_WORDS    | 5         | Minimum high-confidence words | ⚠️ Warning if < 5 words          |
-| OCR_MIN_TEXT_REGIONS         | 2         | Minimum text regions          | ⚠️ Warning if < 2 regions        |
-| OCR_MIN_CHARACTERS           | 30        | Minimum characters            | ⚠️ Warning if < 30 characters    |
-
-### Decision logic thresholds (orchestrator)
-
-| OCR Confidence | Context                 | Action               | Notes                                    |
-| -------------- | ----------------------- | -------------------- | ---------------------------------------- |
-| < 20%          | Any document            | ❌ REJECTED          | Text completely unreadable               |
-| < 25%          | Stage 2 check           | ❌ REJECTED          | Critical failure threshold               |
-| < 30%          | With blur (< 30)        | ❌ REJECTED          | Blur + low OCR = unreadable              |
-| 30-49%         | With blur (< 30)        | ⚠️ FLAG FOR REVIEW | Blurry but partially readable            |
-| ≥ 30%         | With signatures/stamps  | ✅ ACCEPTED          | Signatures don't affect OCR              |
-| < 30%          | With signatures/stamps  | ⚠️ FLAG FOR REVIEW | Low OCR despite signatures               |
-| ≥ 50%         | With blur               | ✅ ACCEPTED          | Blur filtered (readable)                 |
-| ≥ 50%         | General readability     | ✅ ACCEPTED          | Filters blur/handwriting false positives |
-| ≥ 60%         | With blur + handwriting | ✅ ACCEPTED          | Trust OCR over handwriting detection     |
-| ≥ 60%         | Score-based acceptance  | ✅ ACCEPTED          | Accept with score ≥ 60                  |
-| ≥ 70%         | With handwriting > 20%  | ⚠️ FLAG FOR REVIEW | Conflicting signals                      |
-| > 75%          | With handwriting 25-40% | ⚠️ FLAG FOR REVIEW | OCR and handwriting disagree             |
-| ≥ 80%         | High quality            | ✅ ACCEPTED          | Accept with score ≥ 55 (very lenient)   |
-| > 80%          | All metrics good        | ✅ ACCEPTED          | High priority acceptance                 |
-
-### Summary table
-
-| OCR Range | Status               | Use Case                                            |
-| --------- | -------------------- | --------------------------------------------------- |
-| < 20%     | ❌ REJECTED          | Completely unreadable                               |
-| 20-24%    | ❌ REJECTED          | Critical failure (below 25%)                        |
-| 25-29%    | ⚠️ WARNING         | Below recommended (45%)                             |
-| 30-49%    | ⚠️ FLAG FOR REVIEW | Marginal - needs review                             |
-| 50-59%    | ✅ ACCEPTED          | Readable (filters blur/handwriting false positives) |
-| 60-79%    | ✅ ACCEPTED          | Good readability                                    |
-| ≥ 80%    | ✅ ACCEPTED          | Excellent readability (very lenient scoring)        |
-
-### Configuration values (from .env)
+### Key Thresholds
 
 ```env
-# Critical Thresholds
-OCR_CRITICAL_THRESHOLD=25          # Reject if OCR < 25%
+# Quality Thresholds
+OCR_CRITICAL_THRESHOLD=25          # Reject if < 25%
+BLUR_CRITICAL_THRESHOLD=30        # Reject if < 30% AND OCR < 30%
+BRIGHTNESS_CRITICAL_MAX=300       # Accept up to 300
+HANDWRITING_CRITICAL_THRESHOLD=30 # Reject if ≥ 30%
 
-# Warning Thresholds
-OCR_AVG_CONFIDENCE_THRESHOLD=45    # Warning if OCR < 45%
-OCR_HIGH_CONFIDENCE_WORDS=5        # Minimum high-confidence words
-OCR_HIGH_CONFIDENCE_SCORE=70       # Word confidence threshold
-OCR_MIN_TEXT_REGIONS=2             # Minimum text regions
-OCR_MIN_CHARACTERS=30              # Minimum characters
+# Scoring
+SCORE_ACCEPT_THRESHOLD=70        # Accept if ≥ 70
+SCORE_REVIEW_THRESHOLD=50        # Flag if 50-69
+
+# Index-II Processor
+INDEX2_PROCESSOR_ENABLED=true
+INDEX2_MIN_OCR_CONFIDENCE=30     # Lenient for Index-II
+INDEX2_MIN_ACCEPT_SCORE=50       # Lower threshold
 ```
 
-### Decision flow
+## API Endpoints
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/api/health` | GET | Health check |
+| `/api/upload` | POST | Single document upload |
+| `/api/bulk-upload` | POST | Bulk upload (up to 50) |
+| `/api/process-url` | POST | Process from URL |
+| `/api/bulk-process-urls` | POST | Bulk process from URLs |
+| `/api/docs` | GET | Swagger documentation |
+
+## Quality Score
 
 ```
-OCR Confidence Check:
-├─ < 20% → ❌ REJECTED (Completely unreadable)
-├─ < 25% → ❌ REJECTED (Critical failure)
-├─ 25-29% → ⚠️ WARNING (Below recommended)
-├─ 30-49% → ⚠️ FLAG FOR REVIEW (Marginal)
-│   └─ With blur → Review (may need rescanning)
-│   └─ With signatures → Review (low OCR)
-├─ 50-59% → ✅ ACCEPTED (Readable)
-│   └─ Filters blur/handwriting false positives
-├─ 60-79% → ✅ ACCEPTED (Good readability)
-│   └─ Accept with score ≥ 60
-└─ ≥ 80% → ✅ ACCEPTED (Excellent)
-    └─ Accept with score ≥ 55 (very lenient)
+Final Score = (Stage1 × 35%) + (Stage2 × 40%) + (Stage3 × 20%) + (Stage4 × 5%)
 ```
 
-### Notes
+**Acceptance:**
+- Score ≥ 70 → ✅ ACCEPTED
+- Score ≥ 60 + OCR ≥ 60% → ✅ ACCEPTED
+- Score ≥ 55 + OCR ≥ 80% → ✅ ACCEPTED
+- Score 50-69 → ⚠️ FLAG FOR REVIEW
+- Score < 50 → ❌ REJECTED
 
-1. Primary signal: OCR confidence is the primary readability indicator
-2. Blur filtering: OCR ≥ 50% filters blur false positives
-3. Handwriting filtering: OCR ≥ 50% filters handwriting false positives for blurry documents
-4. Signature handling: OCR ≥ 30% accepts documents with signatures/stamps
-5. Lenient acceptance: Higher OCR (≥ 80%) allows lower quality scores (≥ 55)
+**OCR-Based Override:**
+- OCR ≥ 80% → Accept with score ≥ 55 (trust OCR over handwriting)
+- OCR ≥ 60% → Accept with score ≥ 60
+- OCR ≥ 50% → Filter blur/handwriting false positives
 
-All thresholds are configurable via the .env file.
+## Index-II Specialized Processor
 
-### Result
+**Detection:** Content-based (text markers, visual structure, negative signals)  
+**Validation:** Lenient (OCR ≥ 30%, Score ≥ 50)  
+**Bold Text:** OCR ≥ 70% trusted over handwriting detection  
+**Routing:** Confidence ≥ 0.60 → Index-II pipeline, < 0.60 → General pipeline
 
-- Better handling of scanned documents that are readable but have imperfect image quality
-- Reduced false rejections of good documents
-- More accurate detection of signatures/stamps vs handwritten documents
+**Negative Signals:** NOC, No Dues, Agreement, Will, Testament (prevent misrouting)
 
-## 🔗 URL-Based Processing (RTS API Integration)
+## Performance
 
-The system supports processing documents from URLs, making it easy to integrate with external APIs like RTS website.
+- **Processing Time:** 3-8 seconds/document
+- **Accuracy:** 85%+ correct decisions
+- **Cost Savings:** 50-60% LLM cost reduction
+- **Manual Review Reduction:** 70-80%
+- **Acceptance Rate:** 50-55% reach LLM
 
-### Single Document from URL
+## Recent Updates (v1.5.0)
 
-```bash
-POST /api/process-url
-Content-Type: application/json
-
-{
-  "url": "https://rts-website.com/api/document/123/download",
-  "filename": "doc123"  // optional
-}
-```
-
-### Bulk Processing from URLs
-
-```bash
-POST /api/bulk-process-urls
-Content-Type: application/json
-
-{
-  "urls": [
-    "https://rts-website.com/api/document/123/download",
-    "https://rts-website.com/api/document/124/download"
-  ],
-  "filenames": ["doc123", "doc124"]  // optional
-}
-```
-
-### Integration Example
-
-```python
-import requests
-
-# Get document URLs from RTS API
-rts_docs = requests.get("https://rts-website.com/api/documents").json()
-urls = [doc['download_link'] for doc in rts_docs['documents']]
-
-# Process through quality pipeline
-response = requests.post(
-    "http://localhost:5000/api/bulk-process-urls",
-    json={"urls": urls}
-)
-results = response.json()
-
-# Filter accepted documents
-accepted = [r for r in results['results'] if r['status'] == 'ACCEPTED']
-```
-
-### Configuration
-
-```env
-DOWNLOAD_FOLDER=downloads
-DOWNLOAD_TIMEOUT=30
-```
-
-## 🤖 Florence-2 Integration (Optional)
-
-Florence-2 is an optional AI-powered component that helps reduce false positives in handwriting detection, especially for bold text cases.
-
-### Installation
-
-```bash
-pip install torch transformers einops timm
-```
-
-### Enable
-
-```env
-FLORENCE_ENABLED=true
-```
-
-### How It Works
-
-- **When Called**: Handwriting detected (≥ 20%) AND OCR confidence ≥ 50%
-- **Purpose**: Verify if handwriting detection is a false positive (e.g., bold text)
-- **Performance**: First document ~8-10 seconds (model loading), subsequent ~1-2 seconds
-- **Memory**: ~2-3GB RAM
-
-### Benefits
-
-- Reduces false positives from bold text, formatting, and scanning artifacts
-- Provides additional verification layer for borderline cases
-- Modular component - can be enabled/disabled easily
-
-## 📚 API Documentation
-
-### Swagger UI
-
-Access interactive API documentation at:
-
-```
-http://localhost:5000/api/docs
-```
-
-Features:
-- Test all endpoints directly from browser
-- View request/response examples
-- See parameter descriptions
-- Export OpenAPI specification
-
-### OpenAPI Spec
-
-```
-http://localhost:5000/api/apispec.json
-```
-
-## 🛠️ Development
-
-### Adding New Quality Checks
-
-1. Create a new method in the appropriate stage module
-2. Add the check to the `process()` method
-3. Update thresholds in `.env` if needed
-4. Test with sample documents
-
-### Modifying Stage Logic
-
-Each stage is a separate module in `src/stages/`. Modify the logic in the respective stage file and update the orchestrator if needed.
-
-## 📝 License
-
-This project is developed by Stark Digital Media Services Private Limited.
-
-## 🤝 Support
-
-For questions or support, contact the development team.
+- ✅ Simplified user messages (no technical details)
+- ✅ Index-II bold text handling (OCR ≥ 70% trusted)
+- ✅ Agreement/Will routing fixes (negative signals)
+- ✅ Stricter Index-II detection (only exact markers)
 
 ---
 
-**Version**: 1.2.0
-**Last Updated**: December 2025
-
-### Changelog
-
-**v1.1.0 (December 2025)**
-
-- ✅ OCR confidence now primary signal for readability
-- ✅ Blur rejection only when OCR also confirms unreadability
-- ✅ Improved handling of blurry scanned documents
-- ✅ Reduced false positives for handwriting detection
-- ✅ More lenient acceptance for readable documents
-- ✅ Better signature/stamp detection (accepts with OCR ≥ 30%)
-- ✅ **Bulk upload feature** - Process multiple documents at once
-- ✅ **Bulk results table** - View status, score, OCR confidence, and reason for each document
-- ✅ **Multi-page PDF processing** - Processes all pages of PDF documents
-- ✅ **Smart page selection** - 1-page docs use page 1, 2-page docs use page 2 (content page), 3+ page docs use best quality page
-- ✅ **Brightness threshold increased** - Documents with brightness up to 300 are now accepted (was 250)
-- ✅ **Stage 1 status logic improved** - Stage only fails on critical failures, warnings don't cause failure
-- ✅ **URL-based processing** - Download and process documents from URLs (for RTS API integration)
-- ✅ **Swagger API documentation** - Interactive API docs at `/api/docs`
-- ✅ **Florence-2 integration** - Optional AI-powered handwriting verification
-- ✅ **Bold text handling** - Fixed false positives where bold text was misclassified as handwriting
-- ✅ **Enhanced safeguards** - Multiple layers to prevent accepting handwritten documents
+**Version:** 1.5.0 | **Last Updated:** December 2025

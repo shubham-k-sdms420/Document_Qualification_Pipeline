@@ -26,6 +26,7 @@ scikit-image==0.22.0
 werkzeug==3.0.1
 requests>=2.31.0
 flasgger>=0.9.7.1
+pyzbar==0.1.9
 
 # Optional: Florence-2 Dependencies (for false positive handwriting detection)
 # Uncomment these lines to enable Florence-2 classifier

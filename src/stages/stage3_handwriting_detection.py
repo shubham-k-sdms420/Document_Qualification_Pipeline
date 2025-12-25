@@ -313,7 +313,7 @@ class HandwritingDetector:
             passed = False
             action = 'REJECT'
             critical_failures.append(
-                f'Document is significantly handwritten ({handwriting_pct:.1f}% handwriting) - only printed documents are accepted'
+                'Document is handwritten. Only printed documents are accepted.'
             )
             stage_score = 0
         

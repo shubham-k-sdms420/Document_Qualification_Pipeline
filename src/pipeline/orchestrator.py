@@ -25,6 +25,14 @@ except ImportError:
     FLORENCE_AVAILABLE = False
     logger.warning("Florence-2 classifier not available (install torch and transformers to enable)")
 
+# Optional Index-II specialized processor (modular component)
+try:
+    from src.utils.index2_processor import Index2Processor
+    INDEX2_PROCESSOR_AVAILABLE = True
+except ImportError:
+    INDEX2_PROCESSOR_AVAILABLE = False
+    logger.warning("Index-II processor not available")
+
 load_dotenv()
 
 # Set up logger
@@ -50,6 +58,15 @@ class PipelineOrchestrator:
         self.stage4 = BRISQUEQualityScorer()
         self.pdf_converter = PDFConverter()
         self.image_processor = ImageProcessor()
+        
+        # Initialize Index-II processor if available
+        self.index2_processor = None
+        if INDEX2_PROCESSOR_AVAILABLE:
+            try:
+                self.index2_processor = Index2Processor()
+                logger.info("Index-II specialized processor available")
+            except Exception as e:
+                logger.warning(f"Index-II processor initialization failed: {e}")
     
     def calculate_final_quality_score(self, stage_results: List[Dict]) -> float:
         """
@@ -126,19 +143,33 @@ class PipelineOrchestrator:
                     image_path, ocr_confidence, handwriting_pct
                 )
                 
-                # SAFEGUARD: If Florence says handwritten, REJECT even if OCR is high
-                # Handwritten documents can sometimes have decent OCR if very clear
+                # SAFEGUARD: If Florence says handwritten, check OCR confidence
+                # If OCR is VERY high (>= 85%), Florence may be wrong (signatures/stamps can confuse it)
                 if florence_override and not florence_override.get('is_printed', True):
-                    # Florence confirmed it's handwritten - reject
-                    logger.warning(
-                        f"High OCR ({ocr_confidence:.1f}%) but Florence confirmed HANDWRITTEN - "
-                        f"rejecting document (handwriting: {handwriting_pct:.1f}%)"
-                    )
-                    return {
-                        'status': 'REJECTED',
-                        'priority': 'N/A',
-                        'message': f'Document is handwritten - Florence-2 confirmed handwritten text despite high OCR confidence ({ocr_confidence:.1f}%). Only printed documents are accepted.'
-                    }
+                    # Florence confirmed handwritten - but check OCR confidence
+                    if ocr_confidence >= 85:
+                        # Very high OCR - likely signatures/stamps, not handwritten content
+                        # Trust OCR over Florence for very high OCR cases
+                        logger.warning(
+                            f"Florence says handwritten but OCR is very high ({ocr_confidence:.1f}%) - "
+                            f"likely signatures/stamps, trusting OCR"
+                        )
+                        return {
+                            'status': 'ACCEPTED',
+                            'priority': 'Normal',
+                            'message': 'Document accepted. Text is clearly readable and printed.'
+                        }
+                    else:
+                        # Florence confirmed handwritten and OCR not extremely high - reject
+                        logger.warning(
+                            f"High OCR ({ocr_confidence:.1f}%) but Florence confirmed HANDWRITTEN - "
+                            f"rejecting document (handwriting: {handwriting_pct:.1f}%)"
+                        )
+                        return {
+                            'status': 'REJECTED',
+                            'priority': 'N/A',
+                            'message': 'Document is handwritten. Only printed documents are accepted.'
+                        }
                 
                 if florence_override and florence_override.get('is_printed'):
                     # Florence confirms printed - accept
@@ -169,7 +200,7 @@ class PipelineOrchestrator:
                         return {
                             'status': 'ACCEPTED',
                             'priority': 'Normal',
-                            'message': f'Document accepted - Extremely high OCR confidence ({ocr_confidence:.1f}%) indicates readable printed text. Handwriting detection ({handwriting_pct:.1f}%) is likely false positive from bold text or formatting.'
+                            'message': 'Document accepted. Text is clearly readable and printed.'
                         }
                     elif handwriting_pct >= 50:
                         # Very high handwriting (>= 50%) - even with high OCR, require Florence confirmation
@@ -181,7 +212,7 @@ class PipelineOrchestrator:
                         return {
                             'status': 'REJECTED',
                             'priority': 'N/A',
-                            'message': f'Document appears handwritten ({handwriting_pct:.1f}% handwriting). Florence-2 verification required but not available or did not confirm printed text. Only printed documents are accepted.'
+                            'message': 'Document appears handwritten. Only printed documents are accepted.'
                         }
         
         # ========================================
@@ -216,7 +247,7 @@ class PipelineOrchestrator:
             return {
                 'status': 'REJECTED',
                 'priority': 'N/A',
-                'message': 'Text completely unreadable - OCR confidence too low'
+                'message': 'Document text is unreadable. Please rescan with better quality.'
             }
         
         # Clearly handwritten (high percentage) - but only if not blurry
@@ -232,16 +263,31 @@ class PipelineOrchestrator:
                 
                 # SAFEGUARD: Check if Florence said handwritten
                 if florence_override and not florence_override.get('is_printed', True):
-                    # Florence confirmed handwritten - reject
-                    logger.warning(
-                        f"Florence confirmed HANDWRITTEN for handwriting {handwriting_pct:.1f}% - "
-                        f"rejecting despite OCR: {ocr_confidence:.1f}%"
-                    )
-                    return {
-                        'status': 'REJECTED',
-                        'priority': 'N/A',
-                        'message': f'Document is handwritten - Florence-2 confirmed handwritten text. Only printed documents are accepted.'
-                    }
+                    # Florence confirmed handwritten - but check OCR confidence
+                    # If OCR is VERY high (>= 85%), Florence may be wrong (signatures/stamps can confuse it)
+                    if ocr_confidence >= 85:
+                        # Very high OCR - likely signatures/stamps, not handwritten content
+                        # Trust OCR over Florence for very high OCR cases
+                        logger.warning(
+                            f"Florence says handwritten but OCR is very high ({ocr_confidence:.1f}%) - "
+                            f"likely signatures/stamps, trusting OCR"
+                        )
+                        return {
+                            'status': 'ACCEPTED',
+                            'priority': 'Normal',
+                            'message': 'Document accepted. Text is clearly readable and printed.'
+                        }
+                    else:
+                        # Florence confirmed handwritten and OCR not extremely high - reject
+                        logger.warning(
+                            f"Florence confirmed HANDWRITTEN for handwriting {handwriting_pct:.1f}% - "
+                            f"rejecting despite OCR: {ocr_confidence:.1f}%"
+                        )
+                        return {
+                            'status': 'REJECTED',
+                            'priority': 'N/A',
+                            'message': 'Document is handwritten. Only printed documents are accepted.'
+                        }
                 
                 if florence_override and florence_override.get('is_printed'):
                     # Florence confirms it's printed - override
@@ -252,7 +298,7 @@ class PipelineOrchestrator:
                     return {
                         'status': 'ACCEPTED',
                         'priority': 'Normal',
-                        'message': f'Document accepted - Florence-2 confirmed printed text (confidence: {florence_override.get("confidence", 0):.1%}). Handwriting detection was false positive (likely bold text or formatting).',
+                        'message': 'Document accepted. Text is clearly readable and printed.',
                         'florence_override': {
                             'applied': True,
                             'is_printed': True,
@@ -277,14 +323,14 @@ class PipelineOrchestrator:
                     return {
                         'status': 'REJECTED',
                         'priority': 'N/A',
-                        'message': f'Document is significantly handwritten ({handwriting_pct:.1f}% handwriting) - only printed documents are accepted'
+                            'message': 'Document is handwritten. Only printed documents are accepted.'
                     }
             else:
                 # OCR not high enough - reject without checking Florence
                 return {
                     'status': 'REJECTED',
                     'priority': 'N/A',
-                    'message': f'Document is significantly handwritten ({handwriting_pct:.1f}% handwriting) - only printed documents are accepted'
+                            'message': 'Document is handwritten. Only printed documents are accepted.'
                 }
         
         # Handwriting 30-39% - check Florence if OCR is good
@@ -332,7 +378,7 @@ class PipelineOrchestrator:
                         return {
                             'status': 'ACCEPTED',
                             'priority': 'Normal',
-                            'message': f'Document accepted - Florence-2 confirmed printed text (confidence: {florence_override.get("confidence", 0):.1%}). Spread handwriting detection was false positive.',
+                            'message': 'Document accepted. Text is clearly readable and printed.',
                             'florence_override': {
                                 'applied': True,
                                 'is_printed': True,
@@ -365,7 +411,7 @@ class PipelineOrchestrator:
                     return {
                         'status': 'ACCEPTED',
                         'priority': 'Normal',
-                        'message': f'Document accepted - Florence-2 confirmed printed text (confidence: {florence_override.get("confidence", 0):.1%}). Spread handwriting detection was false positive.',
+                        'message': 'Document accepted. Text is clearly readable and printed.',
                         'florence_override': {
                             'applied': True,
                             'is_printed': True,
@@ -384,7 +430,7 @@ class PipelineOrchestrator:
                 return {
                     'status': 'REJECTED',
                     'priority': 'N/A',
-                    'message': f'Handwritten text throughout document ({handwriting_pct:.1f}% handwriting spread across document)'
+                    'message': 'Document is handwritten. Only printed documents are accepted.'
                 }
         
         # Physically unusable - resolution or blur too poor
@@ -402,14 +448,35 @@ class PipelineOrchestrator:
         blur_extreme_threshold = float(os.getenv('BLUR_EXTREME_THRESHOLD', 15))
         
         if blur_score is not None and blur_score < 30:
-            # EXTREME BLUR: Very low blur scores (< 15 by default) are always rejected
-            # Even if OCR can partially read it, extreme blur makes document unreadable
+            # EXTREME BLUR: Very low blur scores (< 15 by default)
+            # BUT: If OCR is very high (>= 80%), trust OCR - blur detection may be false positive
             if blur_score < blur_extreme_threshold:
-                return {
-                    'status': 'REJECTED',
-                    'priority': 'N/A',
-                    'message': f'Document extremely blurry (blur score: {blur_score:.1f}) - unreadable. Please rescan clearly.'
-                }
+                # Check OCR first - if OCR can read it well, blur detection is likely wrong
+                if ocr_confidence is not None and ocr_confidence >= 80:
+                    # Very high OCR - document is clearly readable despite low blur score
+                    # Blur detection is giving false positive (may be due to compression, scanning artifacts, etc.)
+                    logger.info(
+                        f"Extreme blur score ({blur_score:.1f}) but very high OCR ({ocr_confidence:.1f}%) - "
+                        f"trusting OCR over blur detection (likely false positive)"
+                    )
+                    # Don't reject - let other checks proceed
+                    pass
+                elif ocr_confidence is not None and ocr_confidence >= 50:
+                    # Good OCR - document is readable despite blur score
+                    # Flag for review rather than reject
+                    logger.info(
+                        f"Extreme blur score ({blur_score:.1f}) but good OCR ({ocr_confidence:.1f}%) - "
+                        f"document is readable, blur may be false positive"
+                    )
+                    # Don't reject - let other checks proceed
+                    pass
+                else:
+                    # Low OCR + extreme blur = truly unreadable
+                    return {
+                        'status': 'REJECTED',
+                        'priority': 'N/A',
+                        'message': 'Document is extremely blurry and unreadable. Please rescan clearly.'
+                    }
             
             # MODERATE BLUR (15-30): Check OCR confidence
             # Check OCR confidence - if OCR can read it well, don't reject for blur
@@ -430,19 +497,30 @@ class PipelineOrchestrator:
                 return {
                     'status': 'REJECTED',
                     'priority': 'N/A',
-                    'message': f'Document too blurry (blur score: {blur_score:.1f}) and unreadable (OCR confidence: {ocr_confidence:.1f}%)'
-                }
+                    'message': 'Document is too blurry and unreadable. Please rescan clearly.'
+            }
         
         # Any critical failures from stages (after filtering readable documents)
         all_critical = stage1_critical + stage2_critical + stage3_critical
+        
+        # Filter out blur/handwriting critical failures if OCR is very high (>= 80%)
+        # Very high OCR means document is clearly readable, blur/handwriting are likely false positives
+        if ocr_confidence is not None and ocr_confidence >= 80:
+            all_critical = [
+                f for f in all_critical 
+                if 'blur' not in f.lower() and 'blurry' not in f.lower() and 'handwriting' not in f.lower()
+            ]
+        
         if len(all_critical) > 0:
             # If document is readable (OCR >= 50%), don't reject for blur/handwriting
-            # BUT: Extreme blur (< 15 by default) is always rejected regardless of OCR
+            # Extreme blur is now checked above with OCR validation (line 450-501)
             blur_extreme_threshold = float(os.getenv('BLUR_EXTREME_THRESHOLD', 15))
             is_readable = ocr_confidence is not None and ocr_confidence >= 50
             is_extreme_blur = blur_score is not None and blur_score < blur_extreme_threshold
             
-            if is_readable and not is_extreme_blur:
+            # If OCR is very high (>= 80%), ignore extreme blur (already filtered above)
+            # If OCR is good (>= 50%), ignore moderate blur
+            if is_readable and (not is_extreme_blur or ocr_confidence >= 80):
                 # Check Florence for handwriting false positives BEFORE filtering
                 # If Florence confirms printed, we can safely filter handwriting failures
                 handwriting_critical = [f for f in all_critical if 'handwriting' in f.lower()]
@@ -490,7 +568,7 @@ class PipelineOrchestrator:
             return {
                 'status': 'ACCEPTED',
                 'priority': 'High',
-                'message': 'High quality printed document - all quality checks passed'
+                'message': 'Document accepted. High quality printed document.'
             }
         
         # ========================================
@@ -506,7 +584,7 @@ class PipelineOrchestrator:
                 return {
                     'status': 'ACCEPTED',
                     'priority': 'Normal',
-                    'message': f'Printed document with signatures/stamps ({handwriting_pct:.1f}% handwriting in isolated areas, OCR: {ocr_confidence:.1f}%)'
+                    'message': 'Document accepted. Printed document with signatures/stamps.'
                 }
             else:
                 # OCR too low - might be unreadable
@@ -531,21 +609,21 @@ class PipelineOrchestrator:
                 return {
                     'status': 'ACCEPTED',
                     'priority': 'Normal',
-                    'message': f'Printed document with signatures/stamps ({handwriting_pct:.1f}% handwriting in isolated areas). High OCR confidence ({ocr_confidence:.1f}%) confirms readable printed text.'
+                    'message': 'Document accepted. Printed document with signatures/stamps.'
                 }
             elif is_spread_out:
                 # Spread out handwriting + high OCR = conflicting signals, needs review
                 return {
                     'status': 'FLAG_FOR_REVIEW',
                     'priority': 'Medium',
-                    'message': f'OCR and handwriting detection disagree (OCR: {ocr_confidence:.1f}%, Handwriting: {handwriting_pct:.1f}% spread out) - needs human review'
+                    'message': 'Document quality signals are conflicting. Needs human review.'
                 }
             else:
                 # Distribution unclear - flag for review
                 return {
                     'status': 'FLAG_FOR_REVIEW',
                     'priority': 'Medium',
-                    'message': f'OCR and handwriting detection disagree (OCR: {ocr_confidence:.1f}%, Handwriting: {handwriting_pct:.1f}%) - needs human review'
+                    'message': 'Document quality signals are conflicting. Needs human review.'
                 }
         
         # OCR says bad, but other quality metrics good (unusual font?)
@@ -555,7 +633,7 @@ class PipelineOrchestrator:
             return {
                 'status': 'FLAG_FOR_REVIEW',
                 'priority': 'Low',
-                'message': f'Low OCR confidence ({ocr_confidence:.1f}%) despite good image quality - unusual font or layout?'
+                'message': 'Document text is difficult to read despite good image quality. Unusual font or layout may be present.'
             }
         
         # Handwriting detected but OCR is high (could be false positive from blur or clean handwritten)
@@ -567,7 +645,7 @@ class PipelineOrchestrator:
                 return {
                     'status': 'ACCEPTED',
                     'priority': 'Normal',
-                    'message': f'Blurry scanned document - OCR confidence ({ocr_confidence:.1f}%) indicates printed text. Handwriting detection unreliable due to blur artifacts.'
+                    'message': 'Document accepted. Blurry scanned document but text is readable.'
                 }
             # Check distribution
             if is_concentrated:
@@ -576,7 +654,7 @@ class PipelineOrchestrator:
                 return {
                     'status': 'ACCEPTED',
                     'priority': 'Normal',
-                    'message': f'Printed document with signatures/stamps ({handwriting_pct:.1f}% handwriting in isolated areas). High OCR confidence ({ocr_confidence:.1f}%) confirms readable printed text.'
+                    'message': 'Document accepted. Printed document with signatures/stamps.'
                 }
             elif is_spread_out:
                 # Spread out + high OCR = likely clean handwritten document
@@ -590,7 +668,7 @@ class PipelineOrchestrator:
                 return {
                     'status': 'ACCEPTED',
                     'priority': 'Normal',
-                    'message': f'High OCR confidence ({ocr_confidence:.1f}%) indicates readable printed text. Handwriting detection ({handwriting_pct:.1f}%) may be false positive.'
+                    'message': 'Document accepted. Text is clearly readable and printed.'
                 }
         
         # No consensus decision - use scoring system
@@ -675,14 +753,50 @@ class PipelineOrchestrator:
             
             florence_thread = threading.Thread(target=run_florence, daemon=True)
             florence_thread.start()
-            florence_thread.join(timeout=30)  # 30 second timeout
+            florence_thread.join(timeout=20)  # Reduced to 20 second timeout
             
             if florence_thread.is_alive():
                 logger.warning(
-                    f"Florence processing timed out after 30 seconds - skipping Florence check. "
-                    f"Using other signals for decision (OCR: {ocr_confidence:.1f}%, Handwriting: {handwriting_pct:.1f}%)"
+                    f"Florence processing timed out after 20 seconds - "
+                    f"OCR: {ocr_confidence:.1f}%, Handwriting: {handwriting_pct:.1f}%"
                 )
-                return None  # Skip Florence if it times out
+                
+                # STRICTER FALLBACK: If Florence times out and handwriting is significant, REJECT
+                if handwriting_pct > 35:
+                    logger.warning(
+                        f"High handwriting ({handwriting_pct:.1f}%) + Florence timeout = REJECT "
+                        f"(cannot verify if handwritten)"
+                    )
+                    return {
+                        'is_printed': False,
+                        'confidence': 0.0,
+                        'explanation': 'Florence timeout - cannot verify',
+                        'reject_reason': 'Document appears handwritten. Only printed documents are accepted.'
+                    }
+                elif ocr_confidence >= 75 and handwriting_pct < 35:
+                    # Only trust OCR if it's VERY high and handwriting is moderate
+                    logger.info(
+                        f"Very high OCR ({ocr_confidence:.1f}%) + moderate handwriting ({handwriting_pct:.1f}%) "
+                        f"- trusting OCR over handwriting despite Florence timeout"
+                    )
+                    return {
+                        'is_printed': True,
+                        'confidence': 0.7,
+                        'explanation': 'Very high OCR - likely bold text',
+                        'reject_reason': None
+                    }
+                else:
+                    # Uncertain - be conservative and reject
+                    logger.warning(
+                        f"Florence timeout + uncertain signals (OCR: {ocr_confidence:.1f}%, "
+                        f"Handwriting: {handwriting_pct:.1f}%) - rejecting for safety"
+                    )
+                    return {
+                        'is_printed': False,
+                        'confidence': 0.0,
+                        'explanation': 'Florence timeout - cannot verify',
+                        'reject_reason': 'Florence timeout - cannot verify document type, rejecting for safety'
+                    }
             
             if florence_error[0]:
                 logger.warning(f"Florence classification error: {florence_error[0]}")
@@ -714,7 +828,7 @@ class PipelineOrchestrator:
                     'is_printed': False,
                     'confidence': florence_confidence,
                     'explanation': result.get('explanation', ''),
-                    'reject_reason': 'Florence-2 confirmed document is handwritten'
+                    'reject_reason': 'Document is handwritten. Only printed documents are accepted.'
                 }
             
             # Adjust confidence threshold based on handwriting percentage and OCR
@@ -807,7 +921,7 @@ class PipelineOrchestrator:
                 return {
                     'status': 'ACCEPTED',
                     'priority': 'High' if final_score >= 85 else 'Normal',
-                    'message': f'Readable document (OCR: {ocr_confidence:.1f}%) - send to LLM for processing'
+                    'message': 'Document accepted. Readable document.'
                 }
         
         # Standard acceptance logic
@@ -833,6 +947,7 @@ class PipelineOrchestrator:
     def process_document(self, file_path: str, temp_dir: Optional[str] = None) -> Dict:
         """
         Process a document through all pipeline stages.
+        Routes to Index-II specialized processor if detected, otherwise uses general pipeline.
         
         Args:
             file_path: Path to document (PDF or image)
@@ -842,6 +957,59 @@ class PipelineOrchestrator:
             Complete pipeline result dictionary
         """
         start_time = time.time()
+        
+        # Check if Index-II processor is available and enabled
+        if self.index2_processor and self.index2_processor.enabled:
+            # Convert PDF to image first page for detection (if PDF)
+            is_pdf = self.pdf_converter.is_pdf(file_path)
+            detection_image_path = file_path
+            
+            if is_pdf:
+                # Convert first page for detection
+                if temp_dir is None:
+                    temp_dir = os.path.join(os.path.dirname(file_path), 'temp_images')
+                os.makedirs(temp_dir, exist_ok=True)
+                
+                try:
+                    first_page_images = self.pdf_converter.convert_pdf_to_images(file_path, temp_dir, first_page_only=True)
+                    if first_page_images:
+                        detection_image_path = first_page_images[0]
+                except Exception as e:
+                    logger.warning(f"Failed to convert PDF first page for Index-II detection: {e}")
+            
+            # Try Index-II processing
+            try:
+                # Create a wrapper function for general pipeline
+                def general_pipeline_wrapper(img_path):
+                    # This will be called if document is not Index-II
+                    # We'll process it through the general pipeline below
+                    return None
+                
+                index2_result = self.index2_processor.process_document(
+                    detection_image_path,
+                    use_general_pipeline=False,  # We'll handle general pipeline ourselves
+                    general_pipeline_func=general_pipeline_wrapper
+                )
+                
+                # If Index-II was detected and processed, return the result
+                if index2_result.get('index2_processing', False):
+                    logger.info(f"Document processed as Index-II: {index2_result.get('status')}")
+                    
+                    # Add processing time and other metadata
+                    processing_time = round(time.time() - start_time, 2)
+                    index2_result['processing_time_seconds'] = processing_time
+                    index2_result['file_path'] = file_path
+                    index2_result['file_type'] = 'PDF' if is_pdf else 'IMAGE'
+                    index2_result['success'] = True
+                    
+                    # Return Index-II result (accepted or rejected)
+                    return index2_result
+                    
+            except Exception as e:
+                logger.warning(f"Index-II processing failed, falling back to general pipeline: {e}")
+                # Continue to general pipeline
+        
+        # General pipeline processing (existing logic)
         stage_results = []
         all_critical_failures = []
         all_warnings = []
@@ -987,6 +1155,30 @@ class PipelineOrchestrator:
                 page_blur_extreme_threshold = float(os.getenv('BLUR_EXTREME_THRESHOLD', 15))
                 page_is_extreme_blur = page_blur_score is not None and page_blur_score < page_blur_extreme_threshold
                 page_is_readable = page_ocr_confidence is not None and page_ocr_confidence >= 50
+                page_is_very_readable = page_ocr_confidence is not None and page_ocr_confidence >= 80
+                
+                # If OCR is very high (>= 80%), trust OCR over blur detection even for extreme blur
+                if page_is_very_readable:
+                    # Very high OCR - document is clearly readable, blur detection is likely false positive
+                    blur_critical_failures = [
+                        f for f in page_stage1_result.get('critical_failures', []) 
+                        if 'blur' in f.lower() or 'blurry' in f.lower()
+                    ]
+                    if blur_critical_failures:
+                        page_critical_failures = [
+                            f for f in page_critical_failures 
+                            if f not in blur_critical_failures
+                        ]
+                        if page_stage1_result:
+                            page_stage1_result['critical_failures'] = [
+                                f for f in page_stage1_result.get('critical_failures', [])
+                                if f not in blur_critical_failures
+                            ]
+                            if 'warnings' not in page_stage1_result:
+                                page_stage1_result['warnings'] = []
+                            warning_msg = f'Blur score ({page_blur_score:.1f}) is low but OCR is very high ({page_ocr_confidence:.1f}%) - blur detection likely false positive'
+                            page_stage1_result['warnings'].append(warning_msg)
+                            page_warnings.append(warning_msg)
                 
                 if page_is_readable and not page_is_extreme_blur:
                     # Document is readable and not extremely blurry - remove blur critical failures
@@ -1206,16 +1398,16 @@ class PipelineOrchestrator:
             # For 2-page documents, always check page 2 (content page)
             if best_page_result and best_page_result['page_number'] == 2:
                 if status_info['status'] == 'ACCEPTED':
-                    status_info['message'] = f"Document accepted based on page 2 (content page). {status_info['message']}"
+                    status_info['message'] = f"Document accepted. {status_info['message']}"
                 else:
-                    status_info['message'] = f"Document evaluated based on page 2 (content page). {status_info['message']}"
+                    status_info['message'] = status_info['message']
             else:
                 # Fallback if page 2 wasn't processed
-                status_info['message'] = f"Document evaluated based on page {best_page_result['page_number'] if best_page_result else 1}. {status_info['message']}"
+                status_info['message'] = status_info['message']
         elif len(image_paths) > 2:
             # For 3+ page documents, use best page logic
             if status_info['status'] == 'ACCEPTED':
-                status_info['message'] = f"Document accepted based on page {best_page_result['page_number']} (best quality). {status_info['message']}"
+                status_info['message'] = f"Document accepted. {status_info['message']}"
             else:
                 # Check if any page passed
                 passed_pages = [p for p in page_results if p['status'] == 'ACCEPTED']
@@ -1224,7 +1416,7 @@ class PipelineOrchestrator:
                     status_info['priority'] = 'Normal'
                     status_info['message'] = f"Document accepted - {len(passed_pages)} page(s) passed quality checks (out of {len(image_paths)} total)"
                 else:
-                    status_info['message'] = f"All {len(image_paths)} pages failed quality checks. Best page: {best_page_result['page_number']}"
+                    status_info['message'] = "Document rejected. Quality checks failed."
         
         processing_time = round(time.time() - start_time, 2)
         
